@@ -151,7 +151,10 @@ public sealed class ItemEvaluator
         return added;
     }
 
-    private static bool IsStable(string path, int stabilitySeconds)
+    // A file is "stable" once its last-write time is at least stabilitySeconds in the past — a guard
+    // against grabbing an in-progress download/copy. Shared with LibraryMonitor so a newly-added item
+    // that is not stable yet can be deferred and re-checked rather than skipped outright.
+    internal static bool IsStable(string path, int stabilitySeconds)
     {
         if (stabilitySeconds <= 0)
         {
