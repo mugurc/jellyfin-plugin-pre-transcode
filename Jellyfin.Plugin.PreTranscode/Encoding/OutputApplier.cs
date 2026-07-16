@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using Jellyfin.Plugin.PreTranscode.Configuration;
 
 namespace Jellyfin.Plugin.PreTranscode.Encoding;
@@ -12,13 +13,15 @@ namespace Jellyfin.Plugin.PreTranscode.Encoding;
 /// </summary>
 internal static class OutputApplier
 {
+    private const string DefaultVersionLabel = "Pre-Transcode";
+
     public static string Apply(EncodingProfile profile, string sourcePath, string tempOutputPath)
     {
         var extension = ContainerExtension(profile.Container);
         return profile.OutputMode switch
         {
             OutputHandlingMode.ReplaceInPlace => ReplaceInPlace(sourcePath, tempOutputPath, extension),
-            OutputHandlingMode.AddAsAlternateVersion => AddAsSibling(sourcePath, tempOutputPath, extension),
+            OutputHandlingMode.AddAsAlternateVersion => AddAsSibling(sourcePath, tempOutputPath, extension, profile.AlternateVersionLabel),
             _ => WriteToSeparateDirectory(profile, sourcePath, tempOutputPath, extension)
         };
     }
@@ -57,14 +60,29 @@ internal static class OutputApplier
         return finalPath;
     }
 
-    private static string AddAsSibling(string sourcePath, string tempOutputPath, string extension)
+    // Names the output "<original> - <label>.<ext>". That " - <label>" suffix is Jellyfin's native
+    // convention for alternate versions: files in the same folder sharing a base name are grouped
+    // into one item, and the label is what Jellyfin shows in its version selector.
+    private static string AddAsSibling(string sourcePath, string tempOutputPath, string extension, string label)
     {
         var directory = Path.GetDirectoryName(sourcePath) ?? ".";
         var stem = Path.GetFileNameWithoutExtension(sourcePath);
-        var finalPath = MakeUnique(Path.Combine(directory, stem + " - pretranscode" + extension));
+        var finalPath = MakeUnique(Path.Combine(directory, stem + " - " + SanitizeLabel(label) + extension));
 
         File.Move(tempOutputPath, finalPath);
         return finalPath;
+    }
+
+    private static string SanitizeLabel(string label)
+    {
+        if (string.IsNullOrWhiteSpace(label))
+        {
+            return DefaultVersionLabel;
+        }
+
+        var invalid = Path.GetInvalidFileNameChars();
+        var cleaned = new string(label.Trim().Where(c => !invalid.Contains(c)).ToArray()).Trim();
+        return string.IsNullOrEmpty(cleaned) ? DefaultVersionLabel : cleaned;
     }
 
     private static string WriteToSeparateDirectory(EncodingProfile profile, string sourcePath, string tempOutputPath, string extension)

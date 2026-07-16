@@ -138,6 +138,14 @@ public class EncodingProfile
     public string OutputDirectory { get; set; } = string.Empty;
 
     /// <summary>
+    /// Gets or sets the version label used by <see cref="OutputHandlingMode.AddAsAlternateVersion"/>.
+    /// The output is written next to the source as <c>&lt;original name&gt; - &lt;label&gt;.&lt;ext&gt;</c>,
+    /// which is Jellyfin's native naming convention for alternate versions, so this label is what
+    /// appears in Jellyfin's version selector (e.g. "H.264 1080p").
+    /// </summary>
+    public string AlternateVersionLabel { get; set; } = "Pre-Transcode";
+
+    /// <summary>
     /// Gets or sets additional raw ffmpeg output arguments applied to the whole command (advanced escape hatch).
     /// </summary>
     public string ExtraOutputArgs { get; set; } = string.Empty;

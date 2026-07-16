@@ -1,7 +1,7 @@
 ---
 name: "Pre-Transcode"
 guid: "8da245f6-7244-449b-9f32-46043f34b5f0"
-version: "0.1.0.0"
+version: "0.2.0.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "Pre-transcode media to an admin-defined compatibility baseline."
@@ -16,4 +16,7 @@ owner: "mugurc"
 artifacts:
 - "Jellyfin.Plugin.PreTranscode.dll"
 changelog: >
-  0.1.0.0 - Initial scaffold: plugin loads and exposes an (mostly empty) configuration page.
+  0.2.0.0 - The "add as alternate version" output mode now uses a configurable version label.
+  The output is named "<original> - <label>.<ext>", which is Jellyfin's native naming convention
+  for alternate versions, so the label (e.g. "H.264 1080p") is what appears in Jellyfin's version
+  selector instead of a hardcoded "pretranscode".

@@ -13,9 +13,19 @@ public class OutputApplierTests
         return dir;
     }
 
-    private static EncodingProfile Profile(OutputHandlingMode mode, string container = "mp4", string outputDir = "")
+    private static EncodingProfile Profile(
+        OutputHandlingMode mode,
+        string container = "mp4",
+        string outputDir = "",
+        string label = "Pre-Transcode")
     {
-        return new EncodingProfile { Container = container, OutputMode = mode, OutputDirectory = outputDir };
+        return new EncodingProfile
+        {
+            Container = container,
+            OutputMode = mode,
+            OutputDirectory = outputDir,
+            AlternateVersionLabel = label
+        };
     }
 
     [Fact]
@@ -68,7 +78,7 @@ public class OutputApplierTests
     }
 
     [Fact]
-    public void AddAsSibling_KeepsBothFiles()
+    public void AddAsAlternateVersion_KeepsBothFiles()
     {
         var work = NewWorkDir();
         try
@@ -80,9 +90,77 @@ public class OutputApplierTests
 
             var final = OutputApplier.Apply(Profile(OutputHandlingMode.AddAsAlternateVersion, "mp4"), source, temp);
 
-            Assert.Contains("pretranscode", final);
             Assert.True(File.Exists(source), "source must remain");
             Assert.True(File.Exists(final));
+        }
+        finally
+        {
+            Directory.Delete(work, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AddAsAlternateVersion_UsesJellyfinVersionNaming_WithConfiguredLabel()
+    {
+        var work = NewWorkDir();
+        try
+        {
+            var source = Path.Combine(work, "movie.mkv");
+            var temp = Path.Combine(work, "tmp.mp4");
+            File.WriteAllText(source, "original");
+            File.WriteAllText(temp, "encoded");
+
+            var final = OutputApplier.Apply(
+                Profile(OutputHandlingMode.AddAsAlternateVersion, "mp4", label: "H.264 1080p"), source, temp);
+
+            // "<base> - <label>.<ext>" is what Jellyfin groups into one item with a version selector.
+            Assert.Equal(Path.Combine(work, "movie - H.264 1080p.mp4"), final);
+        }
+        finally
+        {
+            Directory.Delete(work, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AddAsAlternateVersion_StripsInvalidFileNameCharactersFromLabel()
+    {
+        var work = NewWorkDir();
+        try
+        {
+            var source = Path.Combine(work, "movie.mkv");
+            var temp = Path.Combine(work, "tmp.mp4");
+            File.WriteAllText(source, "original");
+            File.WriteAllText(temp, "encoded");
+
+            var final = OutputApplier.Apply(
+                Profile(OutputHandlingMode.AddAsAlternateVersion, "mp4", label: "H.264/1080p"), source, temp);
+
+            Assert.Equal(work, Path.GetDirectoryName(final));
+            Assert.DoesNotContain("/", Path.GetFileName(final));
+            Assert.True(File.Exists(final));
+        }
+        finally
+        {
+            Directory.Delete(work, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AddAsAlternateVersion_BlankLabel_FallsBackToDefault()
+    {
+        var work = NewWorkDir();
+        try
+        {
+            var source = Path.Combine(work, "movie.mkv");
+            var temp = Path.Combine(work, "tmp.mp4");
+            File.WriteAllText(source, "original");
+            File.WriteAllText(temp, "encoded");
+
+            var final = OutputApplier.Apply(
+                Profile(OutputHandlingMode.AddAsAlternateVersion, "mp4", label: "   "), source, temp);
+
+            Assert.Equal(Path.Combine(work, "movie - Pre-Transcode.mp4"), final);
         }
         finally
         {

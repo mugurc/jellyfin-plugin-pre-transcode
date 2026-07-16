@@ -9,6 +9,14 @@
     "imageUrl": "",
     "versions": [
       {
+        "version": "0.2.0.0",
+        "changelog": "The \"add as alternate version\" output mode now uses a configurable version label. Output is named \"<original> - <label>.<ext>\", which is Jellyfin's native naming convention for alternate versions, so your label (e.g. \"H.264 1080p\") is what appears in Jellyfin's version selector instead of a hardcoded \"pretranscode\".",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases/download/v0.2.0.0/pre-transcode-0.2.0.0.zip",
+        "checksum": "f28115876ae36b4994be844e5d502703",
+        "timestamp": "2026-07-16T14:01:43Z"
+      },
+      {
         "version": "0.1.0.0",
         "changelog": "Initial release: dynamic ffmpeg-driven configuration, rules engine, per-library overrides, persistent job queue + verifying worker, library-scan hook, item-added monitor and a daily sweep scheduled task.",
         "targetAbi": "10.11.0.0",
