@@ -1,0 +1,44 @@
+name: '🏗️ Build'
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - '**/*.md'
+  pull_request:
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test --configuration Release --no-build --verbosity minimal
+
+      - name: Upload plugin DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: Jellyfin.Plugin.PreTranscode
+          path: Jellyfin.Plugin.PreTranscode/bin/Release/net9.0/Jellyfin.Plugin.PreTranscode.dll
+          if-no-files-found: error

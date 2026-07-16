@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Pre-Transcode</title>
+</head>
+<body>
+<div id="PreTranscodeConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+     data-require="emby-input,emby-button,emby-select,emby-checkbox,emby-collapse">
+    <div data-role="content">
+        <div class="content-primary">
+
+            <div class="verticalSection">
+                <div class="sectionTitleContainer flex align-items-center">
+                    <h2 class="sectionTitle">Pre-Transcode</h2>
+                    <a is="emby-linkbutton" class="raised button-alt" href="#" id="lnkQueue" style="margin-left:1.5em;">
+                        <span>Queue &amp; status &raquo;</span>
+                    </a>
+                </div>
+                <p class="fieldDescription" id="ffmpegInfo">Loading ffmpeg capabilities&hellip;</p>
+            </div>
+
+            <form id="PreTranscodeConfigForm">
+
+                <!-- ============ GENERAL ============ -->
+                <div class="verticalSection">
+                    <h3 class="checkboxListLabel">General</h3>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="Enabled" type="checkbox" is="emby-checkbox" />
+                            <span>Enable Pre-Transcode</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">Master switch.</div>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="ProcessNewItemsAutomatically" type="checkbox" is="emby-checkbox" />
+                            <span>Queue new/changed items automatically after a library scan</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">When off, only the scheduled task queues items.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="MaxConcurrentJobs">Max concurrent jobs</label>
+                        <input id="MaxConcurrentJobs" type="number" is="emby-input" min="1" max="32" />
+                        <div class="fieldDescription">Default 1 (CPU-friendly).</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="FileStabilitySeconds">File-stability window (seconds)</label>
+                        <input id="FileStabilitySeconds" type="number" is="emby-input" min="0" max="3600" />
+                        <div class="fieldDescription">A file must be size-stable this long before it is queued (guards active downloads).</div>
+                    </div>
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="DefaultProfileId">Default profile</label>
+                        <select is="emby-select" id="DefaultProfileId" class="emby-select-withcolor emby-select"></select>
+                        <div class="fieldDescription">Used for libraries without a specific override.</div>
+                    </div>
+                </div>
+
+                <!-- ============ PROFILES ============ -->
+                <div class="verticalSection">
+                    <div class="sectionTitleContainer flex align-items-center">
+                        <h3 class="checkboxListLabel" style="margin:0;">Encoding profiles</h3>
+                        <button is="emby-button" type="button" id="btnAddProfile" class="fab submit mini" style="margin-left:1em;" title="Add profile"><span class="material-icons">add</span></button>
+                    </div>
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="ProfileSelector">Editing profile</label>
+                        <select is="emby-select" id="ProfileSelector" class="emby-select-withcolor emby-select"></select>
+                    </div>
+                    <div id="ProfileEditor"></div>
+                    <button is="emby-button" type="button" id="btnDeleteProfile" class="raised button-cancel block"><span>Delete this profile</span></button>
+                </div>
+
+                <!-- ============ RESOLUTION PRESETS ============ -->
+                <div class="verticalSection">
+                    <div class="sectionTitleContainer flex align-items-center">
+                        <h3 class="checkboxListLabel" style="margin:0;">Resolution presets</h3>
+                        <button is="emby-button" type="button" id="btnAddResPreset" class="fab submit mini" style="margin-left:1em;" title="Add preset"><span class="material-icons">add</span></button>
+                    </div>
+                    <p class="fieldDescription">Editable named resolutions referenced by the "Use preset" resolution policy.</p>
+                    <div id="ResPresets"></div>
+                </div>
+
+                <!-- ============ GLOBAL RULES ============ -->
+                <div class="verticalSection">
+                    <div class="sectionTitleContainer flex align-items-center">
+                        <h3 class="checkboxListLabel" style="margin:0;">Global trigger rules</h3>
+                        <button is="emby-button" type="button" id="btnAddRule" class="fab submit mini" style="margin-left:1em;" title="Add rule"><span class="material-icons">add</span></button>
+                    </div>
+                    <p class="fieldDescription">An item is queued when <b>any</b> enabled rule matches. Within a rule, conditions are combined by AND/OR.</p>
+                    <div id="GlobalRules"></div>
+                </div>
+
+                <!-- ============ PER-LIBRARY ============ -->
+                <div class="verticalSection">
+                    <h3 class="checkboxListLabel">Per-library overrides</h3>
+                    <p class="fieldDescription">Give specific libraries their own profile and rules. Libraries not listed use the global default.</p>
+                    <div id="Libraries"></div>
+                </div>
+
+                <div>
+                    <button is="emby-button" type="submit" class="raised button-submit block emby-button"><span>Save</span></button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+    (function () {
+        var pluginId = '8da245f6-7244-449b-9f32-46043f34b5f0';
+
+        var state = { config: null, caps: null, libraries: [], presetCache: {} };
+
+        // ---------- small DOM helpers ----------
+        function el(tag, attrs, children) {
+            var e = document.createElement(tag);
+            if (attrs) { Object.keys(attrs).forEach(function (k) {
+                if (k === 'text') { e.textContent = attrs[k]; }
+                else if (k === 'html') { e.innerHTML = attrs[k]; }
+                else if (k === 'class') { e.className = attrs[k]; }
+                else { e.setAttribute(k, attrs[k]); }
+            }); }
+            (children || []).forEach(function (c) { if (c) { e.appendChild(c); } });
+            return e;
+        }
+        function opt(value, label, selected) {
+            var o = el('option', { value: value, text: label });
+            if (String(selected) === String(value)) { o.selected = true; }
+            return o;
+        }
+        function guid() { return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+            var r = Math.random() * 16 | 0; var v = c === 'x' ? r : (r & 0x3 | 0x8); return v.toString(16); }); }
+
+        function apiGet(path) {
+            return ApiClient.ajax({ type: 'GET', url: ApiClient.getUrl(path), dataType: 'json' });
+        }
+
+        // ---------- capability-driven dropdowns ----------
+        function codecList(media) { return media === 'audio' ? (state.caps.AudioCodecs || []) : (state.caps.VideoCodecs || []); }
+        function encodersFor(media, codecName) {
+            var list = codecList(media);
+            for (var i = 0; i < list.length; i++) { if (list[i].Name === codecName) { return list[i].Encoders || []; } }
+            return [];
+        }
+
+        function fillCodecSelect(select, media, selected) {
+            select.innerHTML = '';
+            select.appendChild(opt('copy', 'copy (passthrough)', selected));
+            codecList(media).forEach(function (c) { select.appendChild(opt(c.Name, c.Name + ' — ' + c.Description, selected)); });
+            // keep an unknown configured value visible
+            if (selected && selected !== 'copy' && !Array.prototype.some.call(select.options, function (o) { return o.value === selected; })) {
+                select.appendChild(opt(selected, selected + ' (not reported by ffmpeg)', selected));
+            }
+        }
+        function fillEncoderSelect(select, media, codecName, selected) {
+            select.innerHTML = '';
+            var encs = encodersFor(media, codecName);
+            if (!encs.length) { select.appendChild(opt(codecName, codecName, selected)); }
+            encs.forEach(function (e) { select.appendChild(opt(e.Name, e.Name + (e.IsHardware ? ' (hardware)' : ''), selected)); });
+            if (selected && !Array.prototype.some.call(select.options, function (o) { return o.value === selected; })) {
+                select.appendChild(opt(selected, selected + ' (not reported)', selected));
+            }
+        }
+
+        function loadPresetSuggestions(encoder, datalist, hint) {
+            if (!encoder) { return; }
+            var apply = function (info) {
+                datalist.innerHTML = '';
+                if (info.Kind === 'IntRange') {
+                    for (var v = info.RangeMin; v <= info.RangeMax; v++) { datalist.appendChild(el('option', { value: String(v) })); }
+                    hint.textContent = 'Valid: integers ' + info.RangeMin + '..' + info.RangeMax + (info.Default != null ? ' (default ' + info.Default + ')' : '') + ' — from ffmpeg.';
+                } else if (info.Kind === 'NamedList') {
+                    (info.Values || []).forEach(function (x) { datalist.appendChild(el('option', { value: x })); });
+                    hint.textContent = 'Suggestions: ' + (info.Values || []).join(', ') + (info.FromFfmpeg ? ' — from ffmpeg.' : ' — documented fallback (ffmpeg does not enumerate these); any value accepted.');
+                } else {
+                    hint.textContent = 'ffmpeg does not enumerate presets for this encoder; enter a valid value manually.';
+                }
+            };
+            if (state.presetCache[encoder]) { apply(state.presetCache[encoder]); return; }
+            apiGet('PreTranscode/Encoders/' + encodeURIComponent(encoder) + '/Presets').then(function (info) {
+                state.presetCache[encoder] = info; apply(info);
+            }, function () { hint.textContent = ''; });
+        }
+
+        // ---------- profile editor ----------
+        function currentProfile() {
+            var id = document.getElementById('ProfileSelector').value;
+            return state.config.Profiles.filter(function (p) { return p.Id === id; })[0];
+        }
+
+        function labeledInput(id, label, type, value, desc, attrs) {
+            var input = el('input', Object.assign({ id: id, type: type, is: 'emby-input' }, attrs || {}));
+            input.value = value == null ? '' : value;
+            return el('div', { class: 'inputContainer' }, [
+                el('label', { class: 'inputLabel inputLabelUnfocused', for: id, text: label }),
+                input,
+                desc ? el('div', { class: 'fieldDescription', html: desc }) : null
+            ]);
+        }
+        function labeledSelect(id, label, desc) {
+            var select = el('select', { id: id, is: 'emby-select', class: 'emby-select-withcolor emby-select' });
+            var wrap = el('div', { class: 'selectContainer' }, [
+                el('label', { class: 'selectLabel', for: id, text: label }), select,
+                desc ? el('div', { class: 'fieldDescription', html: desc }) : null
+            ]);
+            return { wrap: wrap, select: select };
+        }
+        function labeledCheckbox(id, label, checked) {
+            var input = el('input', { id: id, type: 'checkbox', is: 'emby-checkbox' });
+            if (checked) { input.checked = true; }
+            return el('div', { class: 'checkboxContainer' }, [
+                el('label', { class: 'emby-checkbox-label' }, [input, el('span', { text: label })])
+            ]);
+        }
+
+        function renderProfileEditor() {
+            var host = document.getElementById('ProfileEditor');
+            host.innerHTML = '';
+            var p = currentProfile();
+            if (!p) { return; }
+
+            // name
+            host.appendChild(labeledInput('pName', 'Profile name', 'text', p.Name, null));
+
+            // video codec + encoder
+            var vc = labeledSelect('pVideoCodec', 'Target video codec');
+            var ve = labeledSelect('pVideoEncoder', 'Video encoder implementation');
+            host.appendChild(vc.wrap); host.appendChild(ve.wrap);
+            fillCodecSelect(vc.select, 'video', p.VideoCodec);
+            fillEncoderSelect(ve.select, 'video', p.VideoCodec, p.VideoEncoder);
+
+            // preset (free-form + datalist)
+            var presetInput = el('input', { id: 'pPreset', is: 'emby-input', type: 'text', list: 'presetOptions' });
+            presetInput.value = p.Preset || '';
+            var presetList = el('datalist', { id: 'presetOptions' });
+            var presetHint = el('div', { class: 'fieldDescription' });
+            host.appendChild(el('div', { class: 'inputContainer' }, [
+                el('label', { class: 'inputLabel inputLabelUnfocused', for: 'pPreset', text: 'Encoder preset / speed' }),
+                presetInput, presetList, presetHint
+            ]));
+            loadPresetSuggestions(p.VideoEncoder, presetList, presetHint);
+
+            // quality mode
+            var qm = labeledSelect('pVideoQualityMode', 'Quality control');
+            ['Crf', 'Bitrate'].forEach(function (m) { qm.select.appendChild(opt(m, m === 'Crf' ? 'Constant quality (CRF/QP)' : 'Target bitrate', p.VideoQualityMode)); });
+            host.appendChild(qm.wrap);
+            host.appendChild(labeledInput('pCrf', 'CRF / QP value', 'number', p.Crf, 'Lower = higher quality/larger. Sane range depends on codec (x264/x265 ~18–28).', { min: 0, max: 63 }));
+            host.appendChild(labeledInput('pVideoBitrateKbps', 'Target video bitrate (kbps)', 'number', p.VideoBitrateKbps, null, { min: 0 }));
+            host.appendChild(labeledInput('pVideoMaxBitrateKbps', 'Max video bitrate (kbps, 0 = unset)', 'number', p.VideoMaxBitrateKbps, null, { min: 0 }));
+
+            // resolution
+            var rm = labeledSelect('pResolutionMode', 'Resolution policy');
+            [['Unchanged', 'Leave unchanged'], ['CapWidth', 'Cap max width'], ['CapHeight', 'Cap max height'], ['CapLongestEdge', 'Cap longest edge'], ['UsePreset', 'Match a preset']]
+                .forEach(function (m) { rm.select.appendChild(opt(m[0], m[1], p.ResolutionMode)); });
+            host.appendChild(rm.wrap);
+            host.appendChild(labeledInput('pMaxWidth', 'Max width (px)', 'number', p.MaxWidth, null, { min: 0 }));
+            host.appendChild(labeledInput('pMaxHeight', 'Max height (px)', 'number', p.MaxHeight, null, { min: 0 }));
+            var rp = labeledSelect('pResolutionPresetId', 'Resolution preset');
+            state.config.ResolutionPresets.forEach(function (x) { rp.select.appendChild(opt(x.Id, x.Name + ' (' + x.Width + 'x' + x.Height + ')', p.ResolutionPresetId)); });
+            host.appendChild(rp.wrap);
+
+            // audio
+            var ac = labeledSelect('pAudioCodec', 'Target audio codec');
+            var ae = labeledSelect('pAudioEncoder', 'Audio encoder implementation');
+            host.appendChild(ac.wrap); host.appendChild(ae.wrap);
+            fillCodecSelect(ac.select, 'audio', p.AudioCodec);
+            fillEncoderSelect(ae.select, 'audio', p.AudioCodec, p.AudioEncoder);
+            host.appendChild(labeledInput('pAudioBitrateKbps', 'Audio bitrate (kbps)', 'number', p.AudioBitrateKbps, null, { min: 0 }));
+            var cp = labeledSelect('pChannelPolicy', 'Audio channels / downmix');
+            [['Unchanged', 'Leave unchanged'], ['CapStereo', 'Cap at stereo (2.0)'], ['Cap51', 'Cap at 5.1'], ['CapCustom', 'Cap at custom count']]
+                .forEach(function (m) { cp.select.appendChild(opt(m[0], m[1], p.ChannelPolicy)); });
+            host.appendChild(cp.wrap);
+            host.appendChild(labeledInput('pMaxAudioChannels', 'Custom max channels', 'number', p.MaxAudioChannels, null, { min: 1, max: 8 }));
+
+            // HDR / tonemap
+            host.appendChild(labeledCheckbox('pTonemapHdr', 'Tone-map HDR to SDR', p.TonemapHdr));
+            var tm = labeledSelect('pTonemapAlgorithm', 'Tone-map algorithm', 'From ffmpeg\'s tonemap filter.');
+            (state.caps.TonemapAlgorithms || ['none']).forEach(function (a) { tm.select.appendChild(opt(a, a, p.TonemapAlgorithm)); });
+            if (p.TonemapAlgorithm && (state.caps.TonemapAlgorithms || []).indexOf(p.TonemapAlgorithm) < 0) { tm.select.appendChild(opt(p.TonemapAlgorithm, p.TonemapAlgorithm, p.TonemapAlgorithm)); }
+            host.appendChild(tm.wrap);
+
+            // container + output
+            var ct = labeledSelect('pContainer', 'Output container');
+            (state.caps.Containers || []).forEach(function (c) { ct.select.appendChild(opt(c.Name, c.Name + ' — ' + c.Description, p.Container)); });
+            if (p.Container && !(state.caps.Containers || []).some(function (c) { return c.Name === p.Container; })) { ct.select.appendChild(opt(p.Container, p.Container, p.Container)); }
+            host.appendChild(ct.wrap);
+            var om = labeledSelect('pOutputMode', 'Output handling');
+            [['SeparateDirectory', 'Separate output directory (safest, originals untouched)'], ['AddAsAlternateVersion', 'Add as alternate version (best-effort)'], ['ReplaceInPlace', 'Replace original in place (after verify)']]
+                .forEach(function (m) { om.select.appendChild(opt(m[0], m[1], p.OutputMode)); });
+            host.appendChild(om.wrap);
+            host.appendChild(labeledInput('pOutputDirectory', 'Output directory (for separate-directory mode)', 'text', p.OutputDirectory, null));
+            host.appendChild(labeledInput('pExtraVideoArgs', 'Extra ffmpeg video args (advanced)', 'text', p.ExtraVideoArgs, null));
+            host.appendChild(labeledInput('pExtraOutputArgs', 'Extra ffmpeg output args (advanced)', 'text', p.ExtraOutputArgs, null));
+
+            vc.select.addEventListener('change', function () { fillEncoderSelect(ve.select, 'video', vc.select.value, ''); loadPresetSuggestions(ve.select.value, presetList, presetHint); });
+            ve.select.addEventListener('change', function () { loadPresetSuggestions(ve.select.value, presetList, presetHint); });
+            ac.select.addEventListener('change', function () { fillEncoderSelect(ae.select, 'audio', ac.select.value, ''); });
+        }
+
+        function saveProfileEditorInto(p) {
+            if (!p) { return; }
+            function val(id) { var e = document.getElementById(id); return e ? e.value : undefined; }
+            function num(id) { var v = parseInt(val(id), 10); return isNaN(v) ? 0 : v; }
+            function chk(id) { var e = document.getElementById(id); return e ? e.checked : false; }
+            if (document.getElementById('pName') == null) { return; }
+            p.Name = val('pName'); p.VideoCodec = val('pVideoCodec'); p.VideoEncoder = val('pVideoEncoder');
+            p.Preset = val('pPreset'); p.VideoQualityMode = val('pVideoQualityMode'); p.Crf = num('pCrf');
+            p.VideoBitrateKbps = num('pVideoBitrateKbps'); p.VideoMaxBitrateKbps = num('pVideoMaxBitrateKbps');
+            p.ResolutionMode = val('pResolutionMode'); p.MaxWidth = num('pMaxWidth'); p.MaxHeight = num('pMaxHeight');
+            p.ResolutionPresetId = val('pResolutionPresetId'); p.AudioCodec = val('pAudioCodec'); p.AudioEncoder = val('pAudioEncoder');
+            p.AudioBitrateKbps = num('pAudioBitrateKbps'); p.ChannelPolicy = val('pChannelPolicy'); p.MaxAudioChannels = num('pMaxAudioChannels');
+            p.TonemapHdr = chk('pTonemapHdr'); p.TonemapAlgorithm = val('pTonemapAlgorithm'); p.Container = val('pContainer');
+            p.OutputMode = val('pOutputMode'); p.OutputDirectory = val('pOutputDirectory');
+            p.ExtraVideoArgs = val('pExtraVideoArgs'); p.ExtraOutputArgs = val('pExtraOutputArgs');
+        }
+
+        function fillProfileSelectors() {
+            var sel = document.getElementById('ProfileSelector');
+            var def = document.getElementById('DefaultProfileId');
+            var cur = sel.value; sel.innerHTML = ''; def.innerHTML = '';
+            state.config.Profiles.forEach(function (p) { sel.appendChild(opt(p.Id, p.Name, cur)); def.appendChild(opt(p.Id, p.Name, state.config.DefaultProfileId)); });
+            if (!sel.value && state.config.Profiles[0]) { sel.value = state.config.Profiles[0].Id; }
+        }
+
+        // ---------- resolution presets ----------
+        function renderResPresets() {
+            var host = document.getElementById('ResPresets'); host.innerHTML = '';
+            state.config.ResolutionPresets.forEach(function (rp, idx) {
+                var row = el('div', { class: 'flex align-items-center', style: 'gap:0.5em;margin-bottom:0.5em;flex-wrap:wrap;' }, [
+                    inlineInput('rp_name_' + idx, 'Name', 'text', rp.Name, '10em'),
+                    inlineInput('rp_w_' + idx, 'Width', 'number', rp.Width, '7em'),
+                    inlineInput('rp_h_' + idx, 'Height', 'number', rp.Height, '7em'),
+                    delButton(function () { state.config.ResolutionPresets.splice(idx, 1); renderResPresets(); fillProfileSelectors(); })
+                ]);
+                host.appendChild(row);
+            });
+        }
+        function inlineInput(id, ph, type, value, width) {
+            var i = el('input', { id: id, is: 'emby-input', type: type, placeholder: ph, style: 'width:' + (width || '8em') });
+            i.value = value == null ? '' : value; return i;
+        }
+        function delButton(fn) {
+            var b = el('button', { is: 'emby-button', type: 'button', class: 'paper-icon-button-light', title: 'Remove' }, [el('span', { class: 'material-icons', text: 'delete' })]);
+            b.addEventListener('click', fn); return b;
+        }
+        function saveResPresets() {
+            state.config.ResolutionPresets.forEach(function (rp, idx) {
+                var n = document.getElementById('rp_name_' + idx); if (!n) { return; }
+                rp.Name = n.value; rp.Width = parseInt(document.getElementById('rp_w_' + idx).value, 10) || 0; rp.Height = parseInt(document.getElementById('rp_h_' + idx).value, 10) || 0;
+                if (!rp.Id) { rp.Id = guid(); }
+            });
+        }
+
+        // ---------- rules ----------
+        var CONDITION_TYPES = ['VideoCodec', 'VideoHeight', 'VideoWidth', 'VideoBitrateKbps', 'IsHdr', 'IsDolbyVision', 'AudioCodec', 'AudioChannels', 'Container', 'VideoFramerate', 'FileSizeMb'];
+        var OPERATORS = ['Equals', 'NotEquals', 'In', 'NotIn', 'GreaterThan', 'LessThan', 'GreaterThanOrEqual', 'LessThanOrEqual', 'Exists', 'NotExists'];
+
+        function renderRules(hostId, rules) {
+            var host = document.getElementById(hostId); host.innerHTML = '';
+            rules.forEach(function (rule, ri) {
+                var condHost = el('div', { style: 'margin:0.4em 0 0.4em 1.5em;' });
+                rule.Conditions.forEach(function (c, ci) { condHost.appendChild(renderCondition(rule, ci)); });
+                var addCond = el('button', { is: 'emby-button', type: 'button', class: 'raised button-alt', style: 'margin-left:1.5em;' }, [el('span', { text: '+ condition' })]);
+                addCond.addEventListener('click', function () { rule.Conditions.push({ Type: 'VideoCodec', Operator: 'Equals', Value: '' }); renderRules(hostId, rules); });
+
+                var combineSel = el('select', { is: 'emby-select', class: 'emby-select', style: 'width:14em;' });
+                combineSel.appendChild(opt('All', 'Match ALL conditions (AND)', rule.Combine));
+                combineSel.appendChild(opt('Any', 'Match ANY condition (OR)', rule.Combine));
+                combineSel.addEventListener('change', function () { rule.Combine = combineSel.value; });
+
+                var enabledChk = el('input', { type: 'checkbox', is: 'emby-checkbox' }); if (rule.Enabled) { enabledChk.checked = true; }
+                enabledChk.addEventListener('change', function () { rule.Enabled = enabledChk.checked; });
+                var nameInput = inlineInput('rule_name_' + ri, 'Rule name', 'text', rule.Name, '16em');
+                nameInput.addEventListener('input', function () { rule.Name = nameInput.value; });
+
+                var header = el('div', { class: 'flex align-items-center', style: 'gap:0.6em;flex-wrap:wrap;' }, [
+                    el('label', { class: 'emby-checkbox-label' }, [enabledChk, el('span', { text: 'on' })]),
+                    nameInput, combineSel,
+                    delButton(function () { rules.splice(ri, 1); renderRules(hostId, rules); })
+                ]);
+                host.appendChild(el('div', { class: 'verticalSection', style: 'border:1px solid rgba(128,128,128,.3);border-radius:6px;padding:0.6em;margin-bottom:0.6em;' }, [header, condHost, addCond]));
+            });
+        }
+        function renderCondition(rule, ci) {
+            var c = rule.Conditions[ci];
+            var typeSel = el('select', { is: 'emby-select', class: 'emby-select', style: 'width:13em;' });
+            CONDITION_TYPES.forEach(function (t) { typeSel.appendChild(opt(t, t, c.Type)); });
+            typeSel.addEventListener('change', function () { c.Type = typeSel.value; });
+            var opSel = el('select', { is: 'emby-select', class: 'emby-select', style: 'width:12em;' });
+            OPERATORS.forEach(function (o) { opSel.appendChild(opt(o, o, c.Operator)); });
+            opSel.addEventListener('change', function () { c.Operator = opSel.value; });
+            var valInput = inlineInput('', 'value / a,b,c', 'text', c.Value, '12em');
+            valInput.addEventListener('input', function () { c.Value = valInput.value; });
+            return el('div', { class: 'flex align-items-center', style: 'gap:0.5em;margin-bottom:0.35em;flex-wrap:wrap;' }, [
+                typeSel, opSel, valInput,
+                delButton(function () { rule.Conditions.splice(ci, 1); renderRulesForHostContaining(rule); })
+            ]);
+        }
+        function renderRulesForHostContaining(rule) {
+            if (state.config.GlobalRules.indexOf(rule) >= 0) { renderRules('GlobalRules', state.config.GlobalRules); return; }
+            state.config.LibraryOverrides.forEach(function (lo) { if (lo.Rules.indexOf(rule) >= 0) { renderRules('libRules_' + lo.LibraryId, lo.Rules); } });
+        }
+
+        // ---------- per-library ----------
+        function renderLibraries() {
+            var host = document.getElementById('Libraries'); host.innerHTML = '';
+            state.libraries.forEach(function (lib) {
+                var ov = state.config.LibraryOverrides.filter(function (o) { return o.LibraryId === lib.ItemId; })[0];
+                var enabledChk = el('input', { type: 'checkbox', is: 'emby-checkbox' }); if (ov) { enabledChk.checked = true; }
+                var body = el('div', { style: 'margin-left:1.5em;' });
+
+                function ensureOverride() {
+                    if (!ov) { ov = { LibraryId: lib.ItemId, LibraryName: lib.Name, Enabled: true, ProfileId: '', UseGlobalRules: true, Rules: [] }; state.config.LibraryOverrides.push(ov); }
+                    return ov;
+                }
+                function removeOverride() { var i = state.config.LibraryOverrides.indexOf(ov); if (i >= 0) { state.config.LibraryOverrides.splice(i, 1); } ov = null; }
+
+                function renderBody() {
+                    body.innerHTML = '';
+                    if (!ov) { return; }
+                    var prof = labeledSelect('libProf_' + lib.ItemId, 'Profile for this library');
+                    prof.select.appendChild(opt('', '(use global default)', ov.ProfileId));
+                    state.config.Profiles.forEach(function (p) { prof.select.appendChild(opt(p.Id, p.Name, ov.ProfileId)); });
+                    prof.select.addEventListener('change', function () { ov.ProfileId = prof.select.value; });
+                    var useGlobal = el('input', { type: 'checkbox', is: 'emby-checkbox' }); if (ov.UseGlobalRules) { useGlobal.checked = true; }
+                    var rulesHost = el('div', { id: 'libRules_' + lib.ItemId });
+                    var addRuleBtn = el('button', { is: 'emby-button', type: 'button', class: 'raised button-alt' }, [el('span', { text: '+ rule' })]);
+                    addRuleBtn.addEventListener('click', function () { ov.Rules.push(newRule()); renderRules('libRules_' + lib.ItemId, ov.Rules); });
+                    function syncRulesVisibility() { rulesHost.style.display = ov.UseGlobalRules ? 'none' : ''; addRuleBtn.style.display = ov.UseGlobalRules ? 'none' : ''; }
+                    useGlobal.addEventListener('change', function () { ov.UseGlobalRules = useGlobal.checked; syncRulesVisibility(); });
+                    body.appendChild(prof.wrap);
+                    body.appendChild(el('div', { class: 'checkboxContainer' }, [el('label', { class: 'emby-checkbox-label' }, [useGlobal, el('span', { text: 'Use global rules' })])]));
+                    body.appendChild(rulesHost); body.appendChild(addRuleBtn);
+                    renderRules('libRules_' + lib.ItemId, ov.Rules); syncRulesVisibility();
+                }
+
+                enabledChk.addEventListener('change', function () { if (enabledChk.checked) { ensureOverride(); } else { removeOverride(); } renderBody(); });
+                host.appendChild(el('div', { class: 'verticalSection', style: 'border:1px solid rgba(128,128,128,.25);border-radius:6px;padding:0.6em;margin-bottom:0.6em;' }, [
+                    el('div', { class: 'flex align-items-center', style: 'gap:0.6em;' }, [
+                        el('label', { class: 'emby-checkbox-label' }, [enabledChk, el('span', { text: lib.Name + (lib.CollectionType ? ' (' + lib.CollectionType + ')' : '') })])
+                    ]),
+                    body
+                ]));
+                renderBody();
+            });
+        }
+        function newRule() { return { Id: guid(), Name: 'New rule', Enabled: true, Combine: 'All', Conditions: [{ Type: 'VideoCodec', Operator: 'Equals', Value: '' }] }; }
+
+        // ---------- load / save ----------
+        function loadGeneral() {
+            var c = state.config;
+            document.getElementById('Enabled').checked = c.Enabled;
+            document.getElementById('ProcessNewItemsAutomatically').checked = c.ProcessNewItemsAutomatically;
+            document.getElementById('MaxConcurrentJobs').value = c.MaxConcurrentJobs;
+            document.getElementById('FileStabilitySeconds').value = c.FileStabilitySeconds;
+        }
+        function saveGeneral() {
+            var c = state.config;
+            c.Enabled = document.getElementById('Enabled').checked;
+            c.ProcessNewItemsAutomatically = document.getElementById('ProcessNewItemsAutomatically').checked;
+            c.MaxConcurrentJobs = parseInt(document.getElementById('MaxConcurrentJobs').value, 10) || 1;
+            c.FileStabilitySeconds = parseInt(document.getElementById('FileStabilitySeconds').value, 10) || 0;
+            c.DefaultProfileId = document.getElementById('DefaultProfileId').value;
+        }
+
+        function render() {
+            fillProfileSelectors(); loadGeneral(); renderProfileEditor(); renderResPresets();
+            renderRules('GlobalRules', state.config.GlobalRules); renderLibraries();
+            var caps = state.caps || {};
+            document.getElementById('ffmpegInfo').textContent = caps.FfmpegPath
+                ? ('ffmpeg ' + (caps.FfmpegVersion || '') + ' — ' + (caps.VideoCodecs || []).length + ' video codecs, ' + (caps.AudioCodecs || []).length + ' audio codecs, ' + (caps.Containers || []).length + ' containers discovered.')
+                : 'ffmpeg capabilities unavailable (is ffmpeg configured in Jellyfin?).';
+        }
+
+        function load() {
+            Dashboard.showLoadingMsg();
+            Promise.all([
+                ApiClient.getPluginConfiguration(pluginId),
+                apiGet('PreTranscode/Capabilities').catch(function () { return {}; }),
+                ApiClient.getVirtualFolders ? ApiClient.getVirtualFolders() : apiGet('Library/VirtualFolders')
+            ]).then(function (res) {
+                state.config = res[0]; state.caps = res[1]; state.libraries = res[2] || [];
+                if (!state.config.Profiles) { state.config.Profiles = []; }
+                if (!state.config.ResolutionPresets) { state.config.ResolutionPresets = []; }
+                if (!state.config.GlobalRules) { state.config.GlobalRules = []; }
+                if (!state.config.LibraryOverrides) { state.config.LibraryOverrides = []; }
+                render();
+                Dashboard.hideLoadingMsg();
+            });
+        }
+
+        function save() {
+            saveGeneral(); saveProfileEditorInto(currentProfile()); saveResPresets();
+            Dashboard.showLoadingMsg();
+            ApiClient.updatePluginConfiguration(pluginId, state.config).then(function (r) {
+                Dashboard.processPluginConfigurationUpdateResult(r);
+            });
+        }
+
+        var page = document.querySelector('#PreTranscodeConfigPage');
+        page.addEventListener('pageshow', load);
+
+        page.querySelector('#ProfileSelector').addEventListener('change', function () {
+            // persist edits of the previously-shown profile before switching
+            var sel = document.getElementById('ProfileSelector');
+            var prev = state._editing;
+            if (prev) { var pp = state.config.Profiles.filter(function (x) { return x.Id === prev; })[0]; saveProfileEditorInto(pp); }
+            state._editing = sel.value; renderProfileEditor();
+        });
+        page.querySelector('#btnAddProfile').addEventListener('click', function () {
+            var p = { Id: guid(), Name: 'New profile', VideoCodec: 'h264', VideoEncoder: 'libx264', VideoQualityMode: 'Crf', Crf: 21, VideoBitrateKbps: 6000, VideoMaxBitrateKbps: 0, Preset: 'medium', ExtraVideoArgs: '', ResolutionMode: 'Unchanged', MaxWidth: 0, MaxHeight: 0, ResolutionPresetId: '', AudioCodec: 'aac', AudioEncoder: 'aac', AudioBitrateKbps: 256, ChannelPolicy: 'Unchanged', MaxAudioChannels: 2, TonemapHdr: false, TonemapAlgorithm: 'hable', Container: 'mp4', OutputMode: 'SeparateDirectory', OutputDirectory: '', ExtraOutputArgs: '' };
+            state.config.Profiles.push(p); fillProfileSelectors(); document.getElementById('ProfileSelector').value = p.Id; state._editing = p.Id; renderProfileEditor();
+        });
+        page.querySelector('#btnDeleteProfile').addEventListener('click', function () {
+            var id = document.getElementById('ProfileSelector').value;
+            if (state.config.Profiles.length <= 1) { Dashboard.alert('At least one profile is required.'); return; }
+            state.config.Profiles = state.config.Profiles.filter(function (p) { return p.Id !== id; });
+            if (state.config.DefaultProfileId === id) { state.config.DefaultProfileId = state.config.Profiles[0].Id; }
+            state._editing = null; fillProfileSelectors(); renderProfileEditor();
+        });
+        page.querySelector('#btnAddResPreset').addEventListener('click', function () { saveResPresets(); state.config.ResolutionPresets.push({ Id: guid(), Name: 'New', Width: 1920, Height: 1080 }); renderResPresets(); });
+        page.querySelector('#btnAddRule').addEventListener('click', function () { state.config.GlobalRules.push(newRule()); renderRules('GlobalRules', state.config.GlobalRules); });
+        page.querySelector('#lnkQueue').addEventListener('click', function (e) { e.preventDefault(); Dashboard.navigate('configurationpage?name=PreTranscodeQueue'); });
+        page.querySelector('#PreTranscodeConfigForm').addEventListener('submit', function (e) { e.preventDefault(); save(); return false; });
+
+        page.addEventListener('pageshow', function () { state._editing = null; });
+    })();
+    </script>
+</div>
+</body>
+</html>

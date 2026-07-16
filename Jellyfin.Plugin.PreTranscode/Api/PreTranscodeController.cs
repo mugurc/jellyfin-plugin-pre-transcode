@@ -1,0 +1,203 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using System.Linq;
+using System.Net.Mime;
+using System.Threading;
+using System.Threading.Tasks;
+using Jellyfin.Plugin.PreTranscode.Ffmpeg;
+using Jellyfin.Plugin.PreTranscode.Jobs;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+
+namespace Jellyfin.Plugin.PreTranscode.Api;
+
+/// <summary>
+/// Admin-only API surface for the Pre-Transcode plugin: ffmpeg capability discovery (for the config
+/// dashboard) and job-queue management (for the queue/status page).
+/// </summary>
+[ApiController]
+[Authorize(Policy = "RequiresElevation")]
+[Route("PreTranscode")]
+[Produces(MediaTypeNames.Application.Json)]
+public class PreTranscodeController : ControllerBase
+{
+    private readonly IFfmpegCapabilitiesService _capabilities;
+    private readonly IJobQueue _queue;
+    private readonly IQueueController _queueController;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PreTranscodeController"/> class.
+    /// </summary>
+    /// <param name="capabilities">The ffmpeg capabilities service.</param>
+    /// <param name="queue">The job queue.</param>
+    /// <param name="queueController">The runtime queue controller.</param>
+    public PreTranscodeController(IFfmpegCapabilitiesService capabilities, IJobQueue queue, IQueueController queueController)
+    {
+        _capabilities = capabilities;
+        _queue = queue;
+        _queueController = queueController;
+    }
+
+    /// <summary>
+    /// Gets the capabilities discovered from the server's ffmpeg binary.
+    /// </summary>
+    /// <param name="refresh">When <c>true</c>, forces a re-probe instead of returning the cached result.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The discovered ffmpeg capabilities.</returns>
+    [HttpGet("Capabilities")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<FfmpegCapabilities>> GetCapabilities([FromQuery] bool refresh = false, CancellationToken cancellationToken = default)
+    {
+        return Ok(await _capabilities.GetCapabilitiesAsync(refresh, cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// Gets the valid preset/speed values for a specific encoder.
+    /// </summary>
+    /// <param name="encoder">The encoder name.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The discovered preset information.</returns>
+    [HttpGet("Encoders/{encoder}/Presets")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<EncoderPresetInfo>> GetEncoderPresets([FromRoute][Required] string encoder, CancellationToken cancellationToken = default)
+    {
+        return Ok(await _capabilities.GetEncoderPresetsAsync(encoder, cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// Lists all jobs in the queue.
+    /// </summary>
+    /// <returns>All jobs.</returns>
+    [HttpGet("Jobs")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<IReadOnlyList<TranscodeJob>> GetJobs()
+    {
+        return Ok(_queue.GetJobs());
+    }
+
+    /// <summary>
+    /// Gets a summary of queue status and job counts.
+    /// </summary>
+    /// <returns>The queue status.</returns>
+    [HttpGet("Queue/Status")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<object> GetQueueStatus()
+    {
+        var jobs = _queue.GetJobs();
+        return Ok(new
+        {
+            IsPaused = _queue.IsPaused,
+            Pending = jobs.Count(j => j.Status == JobStatus.Pending),
+            Processing = jobs.Count(j => j.Status == JobStatus.Processing),
+            Completed = jobs.Count(j => j.Status == JobStatus.Completed),
+            Failed = jobs.Count(j => j.Status == JobStatus.Failed),
+            Skipped = jobs.Count(j => j.Status == JobStatus.Skipped),
+            Total = jobs.Count
+        });
+    }
+
+    /// <summary>
+    /// Manually enqueues a job for a file path.
+    /// </summary>
+    /// <param name="request">The enqueue request.</param>
+    /// <returns>The created job, or a conflict result if a duplicate was skipped.</returns>
+    [HttpPost("Jobs")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public ActionResult<TranscodeJob> EnqueueJob([FromBody] EnqueueJobRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.SourcePath))
+        {
+            return BadRequest("SourcePath is required.");
+        }
+
+        var job = new TranscodeJob
+        {
+            SourcePath = request.SourcePath,
+            ProfileId = request.ProfileId,
+            ItemId = request.ItemId,
+            DisplayName = string.IsNullOrWhiteSpace(request.DisplayName) ? System.IO.Path.GetFileName(request.SourcePath) : request.DisplayName,
+            LibraryId = request.LibraryId,
+            CreatedUtc = DateTime.UtcNow
+        };
+
+        return _queue.Enqueue(job) ? Ok(job) : Conflict("An active job already exists for this file.");
+    }
+
+    /// <summary>
+    /// Cancels a job.
+    /// </summary>
+    /// <param name="id">The job id.</param>
+    /// <returns>No content.</returns>
+    [HttpPost("Jobs/{id}/Cancel")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public ActionResult CancelJob([FromRoute][Required] string id)
+    {
+        return _queueController.CancelJob(id) ? NoContent() : NotFound();
+    }
+
+    /// <summary>
+    /// Re-queues a finished or failed job.
+    /// </summary>
+    /// <param name="id">The job id.</param>
+    /// <returns>No content.</returns>
+    [HttpPost("Jobs/{id}/Requeue")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public ActionResult RequeueJob([FromRoute][Required] string id)
+    {
+        return _queue.Requeue(id) ? NoContent() : NotFound();
+    }
+
+    /// <summary>
+    /// Removes a job from the queue.
+    /// </summary>
+    /// <param name="id">The job id.</param>
+    /// <returns>No content.</returns>
+    [HttpDelete("Jobs/{id}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public ActionResult RemoveJob([FromRoute][Required] string id)
+    {
+        return _queue.Remove(id) ? NoContent() : NotFound();
+    }
+
+    /// <summary>
+    /// Removes all finished (completed/failed/cancelled/skipped) jobs.
+    /// </summary>
+    /// <returns>No content.</returns>
+    [HttpPost("Jobs/ClearFinished")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public ActionResult ClearFinished()
+    {
+        _queue.ClearFinished();
+        return NoContent();
+    }
+
+    /// <summary>
+    /// Pauses the queue (no new jobs are started).
+    /// </summary>
+    /// <returns>No content.</returns>
+    [HttpPost("Queue/Pause")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public ActionResult PauseQueue()
+    {
+        _queue.IsPaused = true;
+        return NoContent();
+    }
+
+    /// <summary>
+    /// Resumes the queue.
+    /// </summary>
+    /// <returns>No content.</returns>
+    [HttpPost("Queue/Resume")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    public ActionResult ResumeQueue()
+    {
+        _queue.IsPaused = false;
+        return NoContent();
+    }
+}

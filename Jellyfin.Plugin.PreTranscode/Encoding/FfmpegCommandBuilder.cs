@@ -1,0 +1,268 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Text;
+using Jellyfin.Plugin.PreTranscode.Configuration;
+using Jellyfin.Plugin.PreTranscode.Media;
+
+namespace Jellyfin.Plugin.PreTranscode.Encoding;
+
+/// <summary>
+/// Pure builder that turns a resolved <see cref="EncodingProfile"/> plus a probed source into the
+/// exact ffmpeg argument list. No process is executed here, so the mapping is fully unit-testable.
+/// </summary>
+internal static class FfmpegCommandBuilder
+{
+    // Builds the ordered ffmpeg argument list (suitable for ProcessStartInfo.ArgumentList).
+    public static IReadOnlyList<string> BuildArguments(
+        EncodingProfile profile,
+        MediaProbeInfo source,
+        IReadOnlyList<ResolutionPreset> presets,
+        string inputPath,
+        string outputPath)
+    {
+        var args = new List<string> { "-y", "-hide_banner", "-i", inputPath };
+
+        var mkvLike = IsMatroska(profile.Container);
+
+        args.Add("-map");
+        args.Add("0:v:0");
+        args.Add("-map");
+        args.Add("0:a?");
+        if (mkvLike)
+        {
+            args.Add("-map");
+            args.Add("0:s?");
+        }
+
+        args.Add("-map_metadata");
+        args.Add("0");
+        args.Add("-map_chapters");
+        args.Add("0");
+
+        // ---- video ----
+        var filters = new List<string>();
+        if (IsCopy(profile.VideoCodec))
+        {
+            args.Add("-c:v");
+            args.Add("copy");
+        }
+        else
+        {
+            args.Add("-c:v");
+            args.Add(profile.VideoEncoder);
+
+            if (!string.IsNullOrWhiteSpace(profile.Preset))
+            {
+                args.Add("-preset");
+                args.Add(profile.Preset.Trim());
+            }
+
+            AddQuality(args, profile);
+
+            if (profile.TonemapHdr && source.IsHdr)
+            {
+                filters.Add(BuildTonemapChain(profile.TonemapAlgorithm));
+            }
+
+            var scale = ResolutionCalculator.BuildScaleFilter(profile, source, presets);
+            if (scale is not null)
+            {
+                filters.Add(scale);
+            }
+
+            args.Add("-pix_fmt");
+            args.Add("yuv420p");
+            AddRaw(args, profile.ExtraVideoArgs);
+        }
+
+        if (filters.Count > 0)
+        {
+            args.Add("-vf");
+            args.Add(string.Join(",", filters));
+        }
+
+        // ---- audio ----
+        if (IsCopy(profile.AudioCodec))
+        {
+            args.Add("-c:a");
+            args.Add("copy");
+        }
+        else
+        {
+            args.Add("-c:a");
+            args.Add(profile.AudioEncoder);
+            args.Add("-b:a");
+            args.Add(N(profile.AudioBitrateKbps) + "k");
+
+            var cap = ChannelCap(profile);
+            if (cap.HasValue && source.AudioChannels > cap.Value)
+            {
+                args.Add("-ac");
+                args.Add(N(cap.Value));
+            }
+        }
+
+        // ---- subtitles ----
+        if (mkvLike)
+        {
+            args.Add("-c:s");
+            args.Add("copy");
+        }
+
+        AddRaw(args, profile.ExtraOutputArgs);
+
+        // ---- container ----
+        args.Add("-f");
+        args.Add(MuxerFor(profile.Container));
+        if (IsMp4Like(profile.Container))
+        {
+            args.Add("-movflags");
+            args.Add("+faststart");
+        }
+
+        args.Add(outputPath);
+        return args;
+    }
+
+    // Renders an argument list as a single, log-friendly command line (tokens with spaces are quoted).
+    public static string ToCommandLine(IReadOnlyList<string> arguments)
+    {
+        var sb = new StringBuilder("ffmpeg");
+        foreach (var arg in arguments)
+        {
+            sb.Append(' ');
+            if (arg.Contains(' ', StringComparison.Ordinal))
+            {
+                sb.Append('"').Append(arg).Append('"');
+            }
+            else
+            {
+                sb.Append(arg);
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private static void AddQuality(List<string> args, EncodingProfile profile)
+    {
+        if (profile.VideoQualityMode == QualityMode.Crf)
+        {
+            args.Add(CrfFlagFor(profile.VideoEncoder));
+            args.Add(N(profile.Crf));
+            return;
+        }
+
+        args.Add("-b:v");
+        args.Add(N(profile.VideoBitrateKbps) + "k");
+        if (profile.VideoMaxBitrateKbps > 0)
+        {
+            args.Add("-maxrate");
+            args.Add(N(profile.VideoMaxBitrateKbps) + "k");
+            args.Add("-bufsize");
+            args.Add(N(profile.VideoMaxBitrateKbps * 2) + "k");
+        }
+    }
+
+    // The constant-quality flag is encoder-specific; there is no universal ffmpeg option.
+    private static string CrfFlagFor(string encoder)
+    {
+        if (Has(encoder, "nvenc"))
+        {
+            return "-cq";
+        }
+
+        if (Has(encoder, "qsv"))
+        {
+            return "-global_quality";
+        }
+
+        if (Has(encoder, "vaapi"))
+        {
+            return "-qp";
+        }
+
+        if (Has(encoder, "videotoolbox"))
+        {
+            return "-q:v";
+        }
+
+        if (Has(encoder, "amf"))
+        {
+            return "-qp_i";
+        }
+
+        // libx264 / libx265 / libsvtav1 / libaom-av1 / libvpx-vp9 ...
+        return "-crf";
+    }
+
+    private static string BuildTonemapChain(string algorithm)
+    {
+        var algo = string.IsNullOrWhiteSpace(algorithm) ? "hable" : algorithm.Trim();
+        return "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
+            + "tonemap=tonemap=" + algo + ":desat=0,"
+            + "zscale=t=bt709:m=bt709:r=tv,format=yuv420p";
+    }
+
+    private static int? ChannelCap(EncodingProfile profile)
+    {
+        return profile.ChannelPolicy switch
+        {
+            AudioChannelPolicy.CapStereo => 2,
+            AudioChannelPolicy.Cap51 => 6,
+            AudioChannelPolicy.CapCustom => profile.MaxAudioChannels > 0 ? profile.MaxAudioChannels : null,
+            _ => null
+        };
+    }
+
+    private static string MuxerFor(string container)
+    {
+        return container.ToLowerInvariant() switch
+        {
+            "mkv" => "matroska",
+            "" => "mp4",
+            _ => container
+        };
+    }
+
+    private static bool IsMatroska(string container)
+    {
+        var c = container.ToLowerInvariant();
+        return c is "matroska" or "mkv" or "webm";
+    }
+
+    private static bool IsMp4Like(string container)
+    {
+        var c = container.ToLowerInvariant();
+        return c is "mp4" or "mov" or "m4v" or "ipod";
+    }
+
+    private static bool IsCopy(string codec)
+    {
+        return string.Equals(codec, "copy", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool Has(string value, string token)
+    {
+        return value.Contains(token, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void AddRaw(List<string> args, string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return;
+        }
+
+        foreach (var token in raw.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            args.Add(token);
+        }
+    }
+
+    private static string N(int value)
+    {
+        return value.ToString(CultureInfo.InvariantCulture);
+    }
+}

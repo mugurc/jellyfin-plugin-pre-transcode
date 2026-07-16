@@ -1,0 +1,30 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.2" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="Moq" Version="4.20.72" />
+    <!-- Included with runtime assets (unlike the plugin project) so integration tests that touch
+         Jellyfin types (e.g. IMediaEncoder) can load MediaBrowser.Controller at test runtime. -->
+    <PackageReference Include="Jellyfin.Controller" Version="10.11.0" />
+    <PackageReference Include="Jellyfin.Model" Version="10.11.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Jellyfin.Plugin.PreTranscode\Jellyfin.Plugin.PreTranscode.csproj" />
+  </ItemGroup>
+
+</Project>

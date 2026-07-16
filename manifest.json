@@ -1,0 +1,21 @@
+[
+  {
+    "guid": "8da245f6-7244-449b-9f32-46043f34b5f0",
+    "name": "Pre-Transcode",
+    "description": "Proactively pre-transcodes library media in the background into an admin-defined compatibility baseline, eliminating repeated live CPU transcoding for the same files on every playback. Every encoding parameter is configurable and populated from what the server's ffmpeg supports.",
+    "overview": "Pre-transcode media to an admin-defined compatibility baseline.",
+    "owner": "mugurc",
+    "category": "General",
+    "imageUrl": "",
+    "versions": [
+      {
+        "version": "0.1.0.0",
+        "changelog": "Initial release: dynamic ffmpeg-driven configuration, rules engine, per-library overrides, persistent job queue + verifying worker, library-scan hook, item-added monitor and a daily sweep scheduled task.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/OWNER/jellyfin-plugin-pre-transcode/releases/download/v0.1.0.0/pre-transcode-0.1.0.0.zip",
+        "checksum": "REPLACE_WITH_ZIP_MD5",
+        "timestamp": "2026-07-16T00:00:00Z"
+      }
+    ]
+  }
+]

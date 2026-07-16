@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Pre-Transcode Queue</title>
+</head>
+<body>
+<div id="PreTranscodeQueuePage" data-role="page" class="page type-interior pluginConfigurationPage"
+     data-require="emby-input,emby-button">
+    <div data-role="content">
+        <div class="content-primary">
+            <div class="verticalSection">
+                <div class="sectionTitleContainer flex align-items-center">
+                    <h2 class="sectionTitle">Pre-Transcode &mdash; Queue &amp; status</h2>
+                    <a is="emby-linkbutton" class="raised button-alt" href="#" id="lnkSettings" style="margin-left:1.5em;">
+                        <span>&laquo; Settings</span>
+                    </a>
+                </div>
+                <p class="fieldDescription" id="summary">Loading&hellip;</p>
+                <div class="flex align-items-center" style="gap:0.6em;flex-wrap:wrap;margin:0.5em 0;">
+                    <button is="emby-button" type="button" id="btnPause" class="raised button-alt"><span>Pause queue</span></button>
+                    <button is="emby-button" type="button" id="btnResume" class="raised button-alt"><span>Resume queue</span></button>
+                    <button is="emby-button" type="button" id="btnClear" class="raised button-alt"><span>Clear finished</span></button>
+                    <button is="emby-button" type="button" id="btnRefresh" class="raised button-alt"><span>Refresh</span></button>
+                </div>
+            </div>
+            <div class="verticalSection">
+                <table style="width:100%;border-collapse:collapse;" id="jobsTable">
+                    <thead>
+                        <tr style="text-align:left;border-bottom:1px solid rgba(128,128,128,.4);">
+                            <th style="padding:0.4em;">Item</th>
+                            <th style="padding:0.4em;width:9em;">Status</th>
+                            <th style="padding:0.4em;width:12em;">Progress</th>
+                            <th style="padding:0.4em;width:12em;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="jobsBody"></tbody>
+                </table>
+                <p class="fieldDescription" id="empty" style="display:none;">No jobs yet. Jobs are added by the scheduled task, the library-scan hook, or the API.</p>
+            </div>
+        </div>
+    </div>
+    <script type="text/javascript">
+    (function () {
+        var page = document.querySelector('#PreTranscodeQueuePage');
+        var timer = null;
+
+        function api(method, path) {
+            return ApiClient.ajax({ type: method, url: ApiClient.getUrl('PreTranscode/' + path), dataType: method === 'GET' ? 'json' : undefined });
+        }
+
+        function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+
+        function actionButton(label, cls, fn) {
+            var b = document.createElement('button');
+            b.setAttribute('is', 'emby-button');
+            b.type = 'button';
+            b.className = 'raised button-alt';
+            b.style.marginRight = '0.3em';
+            b.style.padding = '0.2em 0.6em';
+            b.innerHTML = '<span>' + label + '</span>';
+            b.addEventListener('click', fn);
+            return b;
+        }
+
+        function renderJobs(jobs) {
+            var body = document.getElementById('jobsBody');
+            body.innerHTML = '';
+            document.getElementById('empty').style.display = jobs.length ? 'none' : '';
+
+            jobs.forEach(function (job) {
+                var tr = document.createElement('tr');
+                tr.style.borderBottom = '1px solid rgba(128,128,128,.15)';
+
+                var name = job.DisplayName || job.SourcePath;
+                var detail = job.StatusDetail ? (' — ' + esc(job.StatusDetail)) : '';
+                var err = job.Status === 'Failed' && job.ErrorMessage ? '<div class="fieldDescription" style="color:#c33;">' + esc(job.ErrorMessage) + '</div>' : '';
+                var itemCell = '<td style="padding:0.4em;"><div>' + esc(name) + '</div><div class="fieldDescription">' + esc(job.SourcePath) + '</div>' + err + '</td>';
+                var statusCell = '<td style="padding:0.4em;">' + esc(job.Status) + detail + '</td>';
+
+                var pct = Math.round(job.Progress || 0);
+                var bar = '';
+                if (job.Status === 'Processing') {
+                    bar = '<div style="background:rgba(128,128,128,.25);border-radius:4px;overflow:hidden;height:1.1em;">'
+                        + '<div style="background:#00a4dc;height:100%;width:' + pct + '%;"></div></div><div class="fieldDescription">' + pct + '%</div>';
+                } else if (job.Status === 'Completed') {
+                    bar = '<span class="fieldDescription">→ ' + esc(job.OutputPath) + '</span>';
+                }
+                var progressCell = '<td style="padding:0.4em;">' + bar + '</td>';
+
+                tr.innerHTML = itemCell + statusCell + progressCell + '<td style="padding:0.4em;" class="actions"></td>';
+
+                var actions = tr.querySelector('.actions');
+                if (job.Status === 'Pending' || job.Status === 'Processing') {
+                    actions.appendChild(actionButton('Cancel', '', function () { api('POST', 'Jobs/' + job.Id + '/Cancel').then(load); }));
+                }
+                if (job.Status === 'Failed' || job.Status === 'Cancelled' || job.Status === 'Completed' || job.Status === 'Skipped') {
+                    actions.appendChild(actionButton('Requeue', '', function () { api('POST', 'Jobs/' + job.Id + '/Requeue').then(load); }));
+                }
+                actions.appendChild(actionButton('Remove', '', function () { api('DELETE', 'Jobs/' + job.Id).then(load); }));
+
+                body.appendChild(tr);
+            });
+        }
+
+        function load() {
+            return Promise.all([api('GET', 'Jobs'), api('GET', 'Queue/Status')]).then(function (res) {
+                var jobs = res[0] || [];
+                var st = res[1] || {};
+                renderJobs(jobs);
+                document.getElementById('summary').textContent =
+                    (st.IsPaused ? '⏸ PAUSED — ' : '') +
+                    'Pending: ' + (st.Pending || 0) + ' · Processing: ' + (st.Processing || 0) +
+                    ' · Completed: ' + (st.Completed || 0) + ' · Failed: ' + (st.Failed || 0) +
+                    ' · Skipped: ' + (st.Skipped || 0);
+            });
+        }
+
+        page.querySelector('#lnkSettings').addEventListener('click', function (e) { e.preventDefault(); Dashboard.navigate('configurationpage?name=Pre-Transcode'); });
+        page.querySelector('#btnPause').addEventListener('click', function () { api('POST', 'Queue/Pause').then(load); });
+        page.querySelector('#btnResume').addEventListener('click', function () { api('POST', 'Queue/Resume').then(load); });
+        page.querySelector('#btnClear').addEventListener('click', function () { api('POST', 'Jobs/ClearFinished').then(load); });
+        page.querySelector('#btnRefresh').addEventListener('click', load);
+
+        page.addEventListener('pageshow', function () { load(); timer = setInterval(load, 2000); });
+        page.addEventListener('pagehide', function () { if (timer) { clearInterval(timer); timer = null; } });
+    })();
+    </script>
+</div>
+</body>
+</html>
