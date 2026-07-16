@@ -10,11 +10,11 @@
     "versions": [
       {
         "version": "0.4.0.0",
-        "changelog": "Preserves every audio track (all languages) on transcode: a track already in the target codec is copied losslessly, the rest are re-encoded, and each is downmixed only if it individually exceeds the channel cap. For Matroska (mkv) outputs, all subtitle tracks and embedded fonts (for ASS/SSA) are carried across as well. Fixes resolution presets and trigger rules multiplying on every server start/update (constructor-seeded defaults were appended to, rather than replacing, the saved configuration on each load); pre-existing duplicates are now cleaned up automatically on load. Newly-added items still being copied or downloaded are now deferred and re-checked until the file settles, so \"queue new items automatically\" fires shortly after a file lands instead of waiting for the daily sweep.",
+        "changelog": "Preserves every audio track (all languages) on transcode: a track already in the target codec is copied losslessly, the rest are re-encoded, and each is downmixed only if it individually exceeds the channel cap. For Matroska (mkv) outputs, all subtitle tracks and embedded fonts (for ASS/SSA) are carried across as well. Fixes resolution presets and trigger rules multiplying on every server start/update (constructor-seeded defaults were appended to, rather than replacing, the saved configuration on each load); pre-existing duplicates are now cleaned up automatically on load. Newly-added items still being copied or downloaded are now deferred and re-checked until the file settles, so \"queue new items automatically\" fires shortly after a file lands instead of waiting for the daily sweep. The \"Add as alternate version\" output mode now registers the transcoded copy as a proper Jellyfin alternate version (a Merge-Versions database link, source kept as primary) instead of only placing a companion file, so the original and the transcode appear as one movie with a version selector without renaming the original.",
         "targetAbi": "10.11.0.0",
         "sourceUrl": "https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases/download/v0.4.0.0/pre-transcode-0.4.0.0.zip",
-        "checksum": "REPLACE_WITH_MD5_FROM_build-plugin.ps1",
-        "timestamp": "REPLACE_WITH_TIMESTAMP_FROM_build-plugin.ps1"
+        "checksum": "84bea173f83cea03894b3215c41387c9",
+        "timestamp": "2026-07-16T19:00:08Z"
       },
       {
         "version": "0.3.0.0",

@@ -24,4 +24,8 @@ changelog: >
   rather than replacing, the saved configuration on each load); pre-existing duplicates are now
   cleaned up automatically on load. Newly-added items still being copied or downloaded are now
   deferred and re-checked until the file settles, so "queue new items automatically" fires
-  shortly after a file lands instead of waiting for the daily sweep.
+  shortly after a file lands instead of waiting for the daily sweep. The "Add as alternate
+  version" output mode now registers the transcoded copy as a proper Jellyfin alternate version
+  (a Merge-Versions database link, with the source kept as the primary) instead of only placing a
+  companion file, so the original and the transcode appear as one movie with a version selector
+  without renaming your original file.
