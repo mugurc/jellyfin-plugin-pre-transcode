@@ -21,6 +21,7 @@
                     <button is="emby-button" type="button" id="btnSweep" class="raised"><span>Scan library now</span></button>
                     <button is="emby-button" type="button" id="btnPause" class="raised button-alt"><span>Pause queue</span></button>
                     <button is="emby-button" type="button" id="btnResume" class="raised button-alt"><span>Resume queue</span></button>
+                    <button is="emby-button" type="button" id="btnCancelAll" class="raised button-alt" title="Cancel every pending and processing job"><span>Cancel all</span></button>
                     <button is="emby-button" type="button" id="btnClear" class="raised button-alt"><span>Clear finished</span></button>
                     <button is="emby-button" type="button" id="btnRefresh" class="raised button-alt"><span>Refresh</span></button>
                 </div>
@@ -160,6 +161,11 @@
         page.querySelector('#btnSweep').addEventListener('click', function () { api('POST', 'Sweep').then(function () { setTimeout(load, 1000); }); });
         page.querySelector('#btnPause').addEventListener('click', function () { api('POST', 'Queue/Pause').then(load); });
         page.querySelector('#btnResume').addEventListener('click', function () { api('POST', 'Queue/Resume').then(load); });
+        page.querySelector('#btnCancelAll').addEventListener('click', function () {
+            if (window.confirm('Cancel all pending and processing jobs? Any running encode will be aborted.')) {
+                api('POST', 'Jobs/CancelAll').then(load);
+            }
+        });
         page.querySelector('#btnClear').addEventListener('click', function () { api('POST', 'Jobs/ClearFinished').then(load); });
         page.querySelector('#btnRefresh').addEventListener('click', load);
 

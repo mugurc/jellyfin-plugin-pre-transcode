@@ -178,6 +178,31 @@ public class PreTranscodeController : ControllerBase
     }
 
     /// <summary>
+    /// Cancels every pending and processing job at once (any running encode is aborted).
+    /// </summary>
+    /// <returns>The number of jobs cancelled.</returns>
+    [HttpPost("Jobs/CancelAll")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<object> CancelAllJobs()
+    {
+        var active = _queue.GetJobs()
+            .Where(j => j.Status == JobStatus.Pending || j.Status == JobStatus.Processing)
+            .ToList();
+
+        var cancelled = 0;
+        foreach (var job in active)
+        {
+            if (_queueController.CancelJob(job.Id))
+            {
+                cancelled++;
+            }
+        }
+
+        _logger.LogInformation("Bulk-cancelled {Count} job(s)", cancelled);
+        return Ok(new { Cancelled = cancelled });
+    }
+
+    /// <summary>
     /// Re-queues a finished or failed job.
     /// </summary>
     /// <param name="id">The job id.</param>
