@@ -39,9 +39,17 @@ to live-transcode that file again.
 - **Safety first.** Each encode is written to a temp file and **verified** (non-empty,
   ffprobe-parseable, duration within tolerance) before any output policy is applied. The default
   policy never modifies your originals. Files still being written (active downloads) are skipped.
+- **Keeps every track.** All audio tracks (every language) are carried across — a track already in
+  the target codec is copied verbatim (no quality loss), the rest are re-encoded, and each is downmixed
+  only if it individually exceeds the channel cap. For a **Matroska (mkv)** output, all subtitle tracks
+  and embedded fonts (for ASS/SSA) are copied losslessly too. *(MP4/MOV can only hold `mov_text`, so
+  choose an mkv container in your profile if you want subtitles preserved.)*
 - **Idempotent.** Files already compliant with the target profile are detected and skipped cheaply.
-- **Feeds itself.** A post-scan hook and an item-added monitor queue new items automatically (opt-in),
-  and a **"Pre-Transcode: sweep library"** scheduled task (daily by default) can re-check everything.
+- **Feeds itself.** A post-scan hook and an item-added monitor queue new items automatically (opt-in).
+  A freshly-added file that is still inside its stability window (an in-progress copy/download) is
+  **deferred and re-checked until it settles** rather than skipped, so a new movie is picked up shortly
+  after it lands instead of waiting for the next sweep. A **"Pre-Transcode: sweep library"** scheduled
+  task (daily by default) re-checks everything as a backstop.
 
 ## How it differs from Tdarr / Unmanic
 
@@ -161,7 +169,12 @@ To produce an installable, checksummed zip (and the catalog manifest entry), run
 - [x] Phase 5 — Persistent job queue + worker (temp-write, verify, apply output policy). Validated
   end-to-end against real ffmpeg (HEVC/MKV → H.264/MP4, source preserved).
 - [x] Phase 6 — Library-scan hook + item-added monitor + scheduled sweep task, per-library rules.
-- [ ] Future — richer subtitle handling, multi-track audio, distributed/off-box encoding.
+- [x] Multi-track audio preservation (all languages; copy-if-compatible) and lossless subtitle +
+  font passthrough for Matroska outputs.
+- [x] Reliable automatic queueing of new items: files still being copied/downloaded are deferred and
+  re-checked until they settle rather than skipped until the next sweep; config no longer duplicates
+  presets/rules across restarts.
+- [ ] Future — MP4 `mov_text` subtitle conversion / external subtitle extraction, distributed/off-box encoding.
 
 ## License
 
