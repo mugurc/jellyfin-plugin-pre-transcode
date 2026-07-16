@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Text.Json;
 using System.Threading;
@@ -65,7 +66,8 @@ internal sealed class MediaProber : IMediaProber
         var overallBitrate = root.TryGetProperty("format", out var fmt) ? GetDouble(fmt, "bit_rate") : 0;
 
         var videoFound = false;
-        var audioFound = false;
+        var audioStreams = new List<AudioStreamInfo>();
+        var subtitleStreams = new List<SubtitleStreamInfo>();
         if (root.TryGetProperty("streams", out var streams) && streams.ValueKind == JsonValueKind.Array)
         {
             foreach (var stream in streams.EnumerateArray())
@@ -84,14 +86,36 @@ internal sealed class MediaProber : IMediaProber
                     info.IsHdr = DetectHdr(stream);
                     info.IsDolbyVision = DetectDolbyVision(stream);
                 }
-                else if (!audioFound && string.Equals(type, "audio", StringComparison.Ordinal))
+                else if (string.Equals(type, "audio", StringComparison.Ordinal))
                 {
-                    audioFound = true;
-                    info.AudioCodec = GetString(stream, "codec_name");
-                    info.AudioChannels = (int)GetDouble(stream, "channels");
-                    info.AudioBitrateKbps = (int)(GetDouble(stream, "bit_rate") / 1000d);
+                    audioStreams.Add(new AudioStreamInfo
+                    {
+                        Codec = GetString(stream, "codec_name"),
+                        Channels = (int)GetDouble(stream, "channels"),
+                        BitrateKbps = (int)(GetDouble(stream, "bit_rate") / 1000d),
+                        Language = GetLanguage(stream)
+                    });
+                }
+                else if (string.Equals(type, "subtitle", StringComparison.Ordinal))
+                {
+                    subtitleStreams.Add(new SubtitleStreamInfo
+                    {
+                        Codec = GetString(stream, "codec_name"),
+                        Language = GetLanguage(stream)
+                    });
                 }
             }
+        }
+
+        info.AudioStreams = audioStreams;
+        info.SubtitleStreams = subtitleStreams;
+
+        // Keep the scalar first-audio fields (consumed by the rule engine and the compliance check).
+        if (audioStreams.Count > 0)
+        {
+            info.AudioCodec = audioStreams[0].Codec;
+            info.AudioChannels = audioStreams[0].Channels;
+            info.AudioBitrateKbps = audioStreams[0].BitrateKbps;
         }
 
         return info;
@@ -126,6 +150,13 @@ internal sealed class MediaProber : IMediaProber
         }
 
         return false;
+    }
+
+    private static string GetLanguage(JsonElement stream)
+    {
+        return stream.TryGetProperty("tags", out var tags) && tags.ValueKind == JsonValueKind.Object
+            ? GetString(tags, "language")
+            : string.Empty;
     }
 
     private static string GetString(JsonElement element, string property)

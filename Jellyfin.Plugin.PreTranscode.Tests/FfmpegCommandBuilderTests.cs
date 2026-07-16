@@ -120,15 +120,74 @@ public class FfmpegCommandBuilderTests
     }
 
     [Fact]
-    public void MatroskaContainer_MapsSubtitlesAndUsesMatroskaMuxer()
+    public void MatroskaContainer_MapsSubtitlesAttachmentsAndUsesMatroskaMuxer()
     {
         var p = BaseProfile();
         p.Container = "mkv";
         var cmd = Build(p, Source());
         Assert.Contains("-f matroska", cmd);
         Assert.Contains("0:s?", cmd);
+        Assert.Contains("0:t?", cmd);
         Assert.Contains("-c:s copy", cmd);
         Assert.DoesNotContain("-movflags", cmd);
+    }
+
+    [Fact]
+    public void Mp4Container_DoesNotMapAttachments()
+    {
+        var cmd = Build(BaseProfile(), Source());
+        Assert.DoesNotContain("0:t?", cmd);
+    }
+
+    [Fact]
+    public void MultiAudio_CopiesTracksAlreadyInTargetCodec_ReEncodesTheRest()
+    {
+        var p = BaseProfile(); // target audio codec = aac
+        var s = Source();
+        s.AudioStreams = new[]
+        {
+            new AudioStreamInfo { Codec = "ac3", Channels = 6, Language = "eng" }, // -> re-encode
+            new AudioStreamInfo { Codec = "aac", Channels = 2, Language = "tur" }, // -> copy verbatim
+        };
+        var cmd = Build(p, s);
+        Assert.Contains("-c:a:0 aac", cmd);
+        Assert.Contains("-b:a:0 256k", cmd);
+        Assert.Contains("-c:a:1 copy", cmd);
+        Assert.DoesNotContain("-b:a:1", cmd);
+    }
+
+    [Fact]
+    public void MultiAudio_ChannelCapAppliesPerTrack()
+    {
+        var p = BaseProfile();
+        p.ChannelPolicy = AudioChannelPolicy.CapStereo; // cap = 2
+        var s = Source();
+        s.AudioStreams = new[]
+        {
+            new AudioStreamInfo { Codec = "aac", Channels = 6 }, // aac but over cap -> re-encode + downmix
+            new AudioStreamInfo { Codec = "aac", Channels = 2 }, // aac within cap -> copy, no downmix
+        };
+        var cmd = Build(p, s);
+        Assert.Contains("-c:a:0 aac", cmd);
+        Assert.Contains("-ac:0 2", cmd);
+        Assert.Contains("-c:a:1 copy", cmd);
+        Assert.DoesNotContain("-ac:1", cmd);
+    }
+
+    [Fact]
+    public void CopyAudioProfile_StillGlobalCopy_EvenWithPerStreamInfo()
+    {
+        var p = BaseProfile();
+        p.AudioCodec = "copy";
+        var s = Source();
+        s.AudioStreams = new[]
+        {
+            new AudioStreamInfo { Codec = "ac3", Channels = 6 },
+            new AudioStreamInfo { Codec = "dts", Channels = 8 },
+        };
+        var cmd = Build(p, s);
+        Assert.Contains("-c:a copy", cmd);
+        Assert.DoesNotContain("-c:a:0", cmd);
     }
 
     [Fact]

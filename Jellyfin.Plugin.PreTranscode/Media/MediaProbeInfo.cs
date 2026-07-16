@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+
 namespace Jellyfin.Plugin.PreTranscode.Media;
 
 /// <summary>
@@ -80,6 +83,18 @@ public class MediaProbeInfo
     /// Gets or sets the primary audio bitrate in kbps.
     /// </summary>
     public int AudioBitrateKbps { get; set; }
+
+    /// <summary>
+    /// Gets or sets every audio track (all languages), in source order. The command builder uses this
+    /// to preserve other-language audio, copying tracks already in the target codec and re-encoding
+    /// only the rest. Empty when the probe did not enumerate streams.
+    /// </summary>
+    public IReadOnlyList<AudioStreamInfo> AudioStreams { get; set; } = Array.Empty<AudioStreamInfo>();
+
+    /// <summary>
+    /// Gets or sets every subtitle track (all languages), in source order.
+    /// </summary>
+    public IReadOnlyList<SubtitleStreamInfo> SubtitleStreams { get; set; } = Array.Empty<SubtitleStreamInfo>();
 
     /// <summary>
     /// Gets the file size in megabytes (derived from <see cref="FileSizeBytes"/>).

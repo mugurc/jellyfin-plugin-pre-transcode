@@ -31,8 +31,12 @@ internal static class FfmpegCommandBuilder
         args.Add("0:a?");
         if (mkvLike)
         {
+            // Matroska can hold every subtitle format (text and image) plus attachments, so carry all
+            // subtitle tracks and any embedded fonts (needed for ASS/SSA to render) across losslessly.
             args.Add("-map");
             args.Add("0:s?");
+            args.Add("-map");
+            args.Add("0:t?");
         }
 
         args.Add("-map_metadata");
@@ -88,8 +92,14 @@ internal static class FfmpegCommandBuilder
             args.Add("-c:a");
             args.Add("copy");
         }
+        else if (source.AudioStreams.Count > 0)
+        {
+            AddPerTrackAudio(args, profile, source);
+        }
         else
         {
+            // Fallback when the probe did not enumerate per-stream info: apply the target codec to
+            // every audio track at once (mapped via 0:a?), downmixing from the first stream's layout.
             args.Add("-c:a");
             args.Add(profile.AudioEncoder);
             args.Add("-b:a");
@@ -143,6 +153,37 @@ internal static class FfmpegCommandBuilder
         }
 
         return sb.ToString();
+    }
+
+    // Preserves every audio track (all languages). A track already in the target codec and within the
+    // channel cap is copied verbatim (no quality loss); the rest are re-encoded, each downmixed only if
+    // it individually exceeds the cap. Per-stream specifiers (:a:i) refer to the i-th mapped audio track.
+    private static void AddPerTrackAudio(List<string> args, EncodingProfile profile, MediaProbeInfo source)
+    {
+        var cap = ChannelCap(profile);
+        for (var i = 0; i < source.AudioStreams.Count; i++)
+        {
+            var stream = source.AudioStreams[i];
+            var idx = N(i);
+            var withinCap = !cap.HasValue || stream.Channels <= cap.Value;
+
+            if (Same(stream.Codec, profile.AudioCodec) && withinCap)
+            {
+                args.Add("-c:a:" + idx);
+                args.Add("copy");
+                continue;
+            }
+
+            args.Add("-c:a:" + idx);
+            args.Add(profile.AudioEncoder);
+            args.Add("-b:a:" + idx);
+            args.Add(N(profile.AudioBitrateKbps) + "k");
+            if (cap.HasValue && stream.Channels > cap.Value)
+            {
+                args.Add("-ac:" + idx);
+                args.Add(N(cap.Value));
+            }
+        }
     }
 
     private static void AddQuality(List<string> args, EncodingProfile profile)
@@ -241,6 +282,11 @@ internal static class FfmpegCommandBuilder
     private static bool IsCopy(string codec)
     {
         return string.Equals(codec, "copy", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool Same(string a, string b)
+    {
+        return string.Equals(a ?? string.Empty, b ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool Has(string value, string token)
