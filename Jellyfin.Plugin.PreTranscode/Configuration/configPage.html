@@ -20,6 +20,7 @@
                         <span>Queue &amp; status &raquo;</span>
                     </a>
                 </div>
+                <p class="fieldDescription">Converts library media <b>once, in the background</b>, into a compatibility baseline you define &mdash; so the server doesn&rsquo;t live-transcode the same files on every playback. Set up a <b>profile</b> (what to convert to) and enable at least one <b>trigger rule</b> (which files to convert). Nothing is processed until a rule is on.</p>
                 <p class="fieldDescription" id="ffmpegInfo">Loading ffmpeg capabilities&hellip;</p>
             </div>
 
@@ -33,29 +34,29 @@
                             <input id="Enabled" type="checkbox" is="emby-checkbox" />
                             <span>Enable Pre-Transcode</span>
                         </label>
-                        <div class="fieldDescription checkboxFieldDescription">Master switch.</div>
+                        <div class="fieldDescription checkboxFieldDescription">Master switch. When off, nothing is evaluated, queued or transcoded.</div>
                     </div>
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label class="emby-checkbox-label">
                             <input id="ProcessNewItemsAutomatically" type="checkbox" is="emby-checkbox" />
-                            <span>Queue new/changed items automatically after a library scan</span>
+                            <span>Queue new/changed items automatically</span>
                         </label>
-                        <div class="fieldDescription checkboxFieldDescription">When off, only the scheduled task queues items.</div>
+                        <div class="fieldDescription checkboxFieldDescription">Evaluate and queue items right after a library scan (and as they&rsquo;re added). When off, only the daily sweep task and the &ldquo;Scan library now&rdquo; button queue work.</div>
                     </div>
                     <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="MaxConcurrentJobs">Max concurrent jobs</label>
+                        <label class="inputLabel inputLabelUnfocused" for="MaxConcurrentJobs" title="Simultaneous transcodes">Max concurrent jobs</label>
                         <input id="MaxConcurrentJobs" type="number" is="emby-input" min="1" max="32" />
-                        <div class="fieldDescription">Default 1 (CPU-friendly).</div>
+                        <div class="fieldDescription">How many transcodes run at once. Each competes with the server for CPU &mdash; <b>1</b> is the safe default.</div>
                     </div>
                     <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="FileStabilitySeconds">File-stability window (seconds)</label>
+                        <label class="inputLabel inputLabelUnfocused" for="FileStabilitySeconds" title="Guards in-progress downloads">File-stability window (seconds)</label>
                         <input id="FileStabilitySeconds" type="number" is="emby-input" min="0" max="3600" />
-                        <div class="fieldDescription">A file must be size-stable this long before it is queued (guards active downloads).</div>
+                        <div class="fieldDescription">A file&rsquo;s timestamp must be unchanged for this long before it&rsquo;s eligible, so an in-progress download or copy isn&rsquo;t grabbed mid-write.</div>
                     </div>
                     <div class="selectContainer">
                         <label class="selectLabel" for="DefaultProfileId">Default profile</label>
                         <select is="emby-select" id="DefaultProfileId" class="emby-select-withcolor emby-select"></select>
-                        <div class="fieldDescription">Used for libraries without a specific override.</div>
+                        <div class="fieldDescription">The encoding profile used for libraries without a per-library override below.</div>
                     </div>
                 </div>
 
@@ -65,6 +66,7 @@
                         <h3 class="checkboxListLabel" style="margin:0;">Encoding profiles</h3>
                         <button is="emby-button" type="button" id="btnAddProfile" class="fab submit mini" style="margin-left:1em;" title="Add profile"><span class="material-icons">add</span></button>
                     </div>
+                    <p class="fieldDescription">A named set of target settings (your &ldquo;compatibility baseline&rdquo;). Every dropdown is populated from what your server&rsquo;s ffmpeg actually supports. Pick the one to edit below; changes are saved when you press <b>Save</b>.</p>
                     <div class="selectContainer">
                         <label class="selectLabel" for="ProfileSelector">Editing profile</label>
                         <select is="emby-select" id="ProfileSelector" class="emby-select-withcolor emby-select"></select>
@@ -89,7 +91,7 @@
                         <h3 class="checkboxListLabel" style="margin:0;">Global trigger rules</h3>
                         <button is="emby-button" type="button" id="btnAddRule" class="fab submit mini" style="margin-left:1em;" title="Add rule"><span class="material-icons">add</span></button>
                     </div>
-                    <p class="fieldDescription">An item is queued when <b>any</b> enabled rule matches. Within a rule, conditions are combined by AND/OR.</p>
+                    <p class="fieldDescription">This is the gate: a file is transcoded only when at least one <b>enabled</b> rule matches it &mdash; nothing runs until a rule is on. Within a rule, combine conditions with <b>ALL</b> (AND) or <b>ANY</b> (OR); across rules it&rsquo;s always OR. Example: <i>video codec is not h264</i>.</p>
                     <div id="GlobalRules"></div>
                 </div>
 
@@ -164,24 +166,41 @@
             }
         }
 
-        function loadPresetSuggestions(encoder, datalist, hint) {
-            if (!encoder) { return; }
-            var apply = function (info) {
-                datalist.innerHTML = '';
-                if (info.Kind === 'IntRange') {
-                    for (var v = info.RangeMin; v <= info.RangeMax; v++) { datalist.appendChild(el('option', { value: String(v) })); }
-                    hint.textContent = 'Valid: integers ' + info.RangeMin + '..' + info.RangeMax + (info.Default != null ? ' (default ' + info.Default + ')' : '') + ' — from ffmpeg.';
-                } else if (info.Kind === 'NamedList') {
-                    (info.Values || []).forEach(function (x) { datalist.appendChild(el('option', { value: x })); });
-                    hint.textContent = 'Suggestions: ' + (info.Values || []).join(', ') + (info.FromFfmpeg ? ' — from ffmpeg.' : ' — documented fallback (ffmpeg does not enumerate these); any value accepted.');
+        // Renders the preset field into hostEl: a real <select id="pPreset"> when ffmpeg reports a
+        // named list (e.g. libx264/x265 ultrafast..placebo); otherwise a free-text input with
+        // suggestions, because many encoders' presets are not enumerable. The control keeps its id so
+        // the save logic reads it the same way either way.
+        function buildPresetControl(hostEl, hintEl, encoder, value) {
+            function apply(info) {
+                hostEl.innerHTML = '';
+                var named = (info && info.Kind === 'NamedList') ? (info.Values || []) : null;
+                if (named && named.length) {
+                    var sel = el('select', { id: 'pPreset', is: 'emby-select', class: 'emby-select-withcolor emby-select' });
+                    var found = false;
+                    named.forEach(function (v) { if (String(v) === String(value)) { found = true; } sel.appendChild(opt(v, v, value)); });
+                    if (value && !found) { sel.appendChild(opt(value, value + ' (custom)', value)); }
+                    if (!value && info.Default != null) { sel.value = String(info.Default); }
+                    hostEl.appendChild(sel);
+                    hintEl.textContent = info.FromFfmpeg ? 'Values reported by ffmpeg.' : 'Documented presets for this encoder (listed fastest → slowest).';
                 } else {
-                    hint.textContent = 'ffmpeg does not enumerate presets for this encoder; enter a valid value manually.';
+                    var inp = el('input', { id: 'pPreset', is: 'emby-input', type: 'text', list: 'presetOptions' });
+                    inp.value = value || '';
+                    var dl = el('datalist', { id: 'presetOptions' });
+                    if (info && info.Kind === 'IntRange') {
+                        for (var v2 = info.RangeMin; v2 <= info.RangeMax; v2++) { dl.appendChild(el('option', { value: String(v2) })); }
+                        hintEl.textContent = 'Valid: integers ' + info.RangeMin + '..' + info.RangeMax + (info.Default != null ? ' (default ' + info.Default + ')' : '') + ' — from ffmpeg.';
+                    } else {
+                        hintEl.textContent = info ? 'ffmpeg doesn’t enumerate presets for this encoder; type a valid value.' : '';
+                    }
+                    hostEl.appendChild(inp); hostEl.appendChild(dl);
                 }
-            };
+            }
+            if (!encoder) { apply(null); return; }
             if (state.presetCache[encoder]) { apply(state.presetCache[encoder]); return; }
+            apply(null); // plain input while the (cached-after-first) lookup resolves
             apiGet('PreTranscode/Encoders/' + encodeURIComponent(encoder) + '/Presets').then(function (info) {
                 state.presetCache[encoder] = info; apply(info);
-            }, function () { hint.textContent = ''; });
+            }, function () { /* leave the plain input in place */ });
         }
 
         // ---------- profile editor ----------
@@ -207,11 +226,21 @@
             ]);
             return { wrap: wrap, select: select };
         }
-        function labeledCheckbox(id, label, checked) {
+        function labeledCheckbox(id, label, checked, desc) {
             var input = el('input', { id: id, type: 'checkbox', is: 'emby-checkbox' });
             if (checked) { input.checked = true; }
-            return el('div', { class: 'checkboxContainer' }, [
-                el('label', { class: 'emby-checkbox-label' }, [input, el('span', { text: label })])
+            return el('div', { class: 'checkboxContainer checkboxContainer-withDescription' }, [
+                el('label', { class: 'emby-checkbox-label' }, [input, el('span', { text: label })]),
+                desc ? el('div', { class: 'fieldDescription checkboxFieldDescription', html: desc }) : null
+            ]);
+        }
+
+        // A small heading that opens a related group of fields inside the profile editor, with a
+        // subtle divider above it so the long form reads as a few short, labelled sections.
+        function subHeading(text, hint) {
+            return el('div', { style: 'margin:1.4em 0 0.5em;padding-top:0.9em;border-top:1px solid rgba(128,128,128,.22);' }, [
+                el('h4', { text: text, style: 'margin:0;font-size:1.06em;' }),
+                hint ? el('div', { class: 'fieldDescription', html: hint, style: 'margin-top:0.15em;' }) : null
             ]);
         }
 
@@ -221,83 +250,132 @@
             var p = currentProfile();
             if (!p) { return; }
 
-            // name
-            host.appendChild(labeledInput('pName', 'Profile name', 'text', p.Name, null));
+            host.appendChild(labeledInput('pName', 'Profile name', 'text', p.Name,
+                'Just a label for this profile — e.g. "H.264 1080p (phones)".'));
 
-            // video codec + encoder
-            var vc = labeledSelect('pVideoCodec', 'Target video codec');
-            var ve = labeledSelect('pVideoEncoder', 'Video encoder implementation');
+            // ---------------- VIDEO ----------------
+            host.appendChild(subHeading('Video', 'The target video format. Pick <b>copy</b> to keep the source video untouched (no re-encode).'));
+            var vc = labeledSelect('pVideoCodec', 'Target video codec', '<b>h264</b> plays on almost anything. Every option comes from your server’s ffmpeg.');
+            var ve = labeledSelect('pVideoEncoder', 'Encoder implementation', 'Software (e.g. libx264) or a hardware encoder if your ffmpeg has one. Hardware is faster but usually larger for the same quality.');
             host.appendChild(vc.wrap); host.appendChild(ve.wrap);
             fillCodecSelect(vc.select, 'video', p.VideoCodec);
             fillEncoderSelect(ve.select, 'video', p.VideoCodec, p.VideoEncoder);
 
-            // preset (free-form + datalist)
-            var presetInput = el('input', { id: 'pPreset', is: 'emby-input', type: 'text', list: 'presetOptions' });
-            presetInput.value = p.Preset || '';
-            var presetList = el('datalist', { id: 'presetOptions' });
+            // preset — real dropdown when ffmpeg reports a named list, free-text otherwise
+            var presetControl = el('div');
             var presetHint = el('div', { class: 'fieldDescription' });
             host.appendChild(el('div', { class: 'inputContainer' }, [
-                el('label', { class: 'inputLabel inputLabelUnfocused', for: 'pPreset', text: 'Encoder preset / speed' }),
-                presetInput, presetList, presetHint
+                el('label', { class: 'inputLabel inputLabelUnfocused', for: 'pPreset', text: 'Encoder preset / speed', title: 'Speed vs. compression trade-off' }),
+                presetControl,
+                el('div', { class: 'fieldDescription', html: 'Speed ↔ file-size trade-off; quality stays constant (CRF). <b>Slower</b> = smaller file, longer encode. <b>Faster</b> (veryfast/ultrafast) = bigger file, quicker.' }),
+                presetHint
             ]));
-            loadPresetSuggestions(p.VideoEncoder, presetList, presetHint);
+            function presetValue() { var e = document.getElementById('pPreset'); return e ? e.value : (p.Preset || ''); }
+            buildPresetControl(presetControl, presetHint, p.VideoEncoder, p.Preset || '');
 
-            // quality mode
-            var qm = labeledSelect('pVideoQualityMode', 'Quality control');
+            // quality mode + (conditional) CRF / bitrate rows
+            var qm = labeledSelect('pVideoQualityMode', 'Quality control', '<b>Constant quality (CRF)</b> is recommended: pick a quality, let size vary. <b>Target bitrate</b> aims for a size instead.');
             ['Crf', 'Bitrate'].forEach(function (m) { qm.select.appendChild(opt(m, m === 'Crf' ? 'Constant quality (CRF/QP)' : 'Target bitrate', p.VideoQualityMode)); });
             host.appendChild(qm.wrap);
-            host.appendChild(labeledInput('pCrf', 'CRF / QP value', 'number', p.Crf, 'Lower = higher quality/larger. Sane range depends on codec (x264/x265 ~18–28).', { min: 0, max: 63 }));
-            host.appendChild(labeledInput('pVideoBitrateKbps', 'Target video bitrate (kbps)', 'number', p.VideoBitrateKbps, null, { min: 0 }));
-            host.appendChild(labeledInput('pVideoMaxBitrateKbps', 'Max video bitrate (kbps, 0 = unset)', 'number', p.VideoMaxBitrateKbps, null, { min: 0 }));
+            var crfRow = labeledInput('pCrf', 'CRF / QP value', 'number', p.Crf, 'Lower = higher quality &amp; bigger file. Good range for x264/x265 is ~18–28 (23 is a common sweet spot).', { min: 0, max: 63 });
+            var brRow = labeledInput('pVideoBitrateKbps', 'Target video bitrate (kbps)', 'number', p.VideoBitrateKbps, 'Average target, e.g. 6000 for 1080p.', { min: 0 });
+            var maxBrRow = labeledInput('pVideoMaxBitrateKbps', 'Max video bitrate (kbps)', 'number', p.VideoMaxBitrateKbps, 'Optional ceiling for bitrate spikes. 0 = no cap.', { min: 0 });
+            host.appendChild(crfRow); host.appendChild(brRow); host.appendChild(maxBrRow);
+            function syncQuality() {
+                var isCrf = qm.select.value === 'Crf';
+                crfRow.style.display = isCrf ? '' : 'none';
+                brRow.style.display = isCrf ? 'none' : '';
+                maxBrRow.style.display = isCrf ? 'none' : '';
+            }
+            qm.select.addEventListener('change', syncQuality); syncQuality();
 
-            // resolution
-            var rm = labeledSelect('pResolutionMode', 'Resolution policy');
+            // ---------------- RESOLUTION ----------------
+            host.appendChild(subHeading('Resolution', 'Only ever <b>downscales</b> — sources already smaller than the target are left as-is.'));
+            var rm = labeledSelect('pResolutionMode', 'Resolution policy', 'Keep the source size, cap it by width / height / longest edge, or fit it into a named preset.');
             [['Unchanged', 'Leave unchanged'], ['CapWidth', 'Cap max width'], ['CapHeight', 'Cap max height'], ['CapLongestEdge', 'Cap longest edge'], ['UsePreset', 'Match a preset']]
                 .forEach(function (m) { rm.select.appendChild(opt(m[0], m[1], p.ResolutionMode)); });
             host.appendChild(rm.wrap);
-            host.appendChild(labeledInput('pMaxWidth', 'Max width (px)', 'number', p.MaxWidth, null, { min: 0 }));
-            host.appendChild(labeledInput('pMaxHeight', 'Max height (px)', 'number', p.MaxHeight, null, { min: 0 }));
-            var rp = labeledSelect('pResolutionPresetId', 'Resolution preset');
+            var maxWRow = labeledInput('pMaxWidth', 'Max width (px)', 'number', p.MaxWidth, 'e.g. 1920 to cap at 1080p width.', { min: 0 });
+            var maxHRow = labeledInput('pMaxHeight', 'Max height (px)', 'number', p.MaxHeight, 'e.g. 1080 to cap at 1080p height.', { min: 0 });
+            var rp = labeledSelect('pResolutionPresetId', 'Resolution preset', 'One of the named presets defined further below.');
             state.config.ResolutionPresets.forEach(function (x) { rp.select.appendChild(opt(x.Id, x.Name + ' (' + x.Width + 'x' + x.Height + ')', p.ResolutionPresetId)); });
-            host.appendChild(rp.wrap);
+            host.appendChild(maxWRow); host.appendChild(maxHRow); host.appendChild(rp.wrap);
+            function syncRes() {
+                var m = rm.select.value;
+                maxWRow.style.display = (m === 'CapWidth' || m === 'CapLongestEdge') ? '' : 'none';
+                maxHRow.style.display = (m === 'CapHeight') ? '' : 'none';
+                rp.wrap.style.display = (m === 'UsePreset') ? '' : 'none';
+                var wl = maxWRow.querySelector('label'); if (wl) { wl.textContent = (m === 'CapLongestEdge') ? 'Max longest edge (px)' : 'Max width (px)'; }
+            }
+            rm.select.addEventListener('change', syncRes); syncRes();
 
-            // audio
-            var ac = labeledSelect('pAudioCodec', 'Target audio codec');
-            var ae = labeledSelect('pAudioEncoder', 'Audio encoder implementation');
+            // ---------------- AUDIO ----------------
+            host.appendChild(subHeading('Audio', 'Applied per track — <b>every language is kept</b>. Pick <b>copy</b> to keep audio untouched.'));
+            var ac = labeledSelect('pAudioCodec', 'Target audio codec', '<b>aac</b> is the safe, widely-supported choice.');
+            var ae = labeledSelect('pAudioEncoder', 'Encoder implementation', null);
             host.appendChild(ac.wrap); host.appendChild(ae.wrap);
             fillCodecSelect(ac.select, 'audio', p.AudioCodec);
             fillEncoderSelect(ae.select, 'audio', p.AudioCodec, p.AudioEncoder);
-            host.appendChild(labeledInput('pAudioBitrateKbps', 'Audio bitrate (kbps)', 'number', p.AudioBitrateKbps, null, { min: 0 }));
-            var cp = labeledSelect('pChannelPolicy', 'Audio channels / downmix');
+            host.appendChild(labeledInput('pAudioBitrateKbps', 'Audio bitrate (kbps)', 'number', p.AudioBitrateKbps, 'Per output track. 256 is plenty for stereo/5.1 AAC.', { min: 0 }));
+            var cp = labeledSelect('pChannelPolicy', 'Audio channels / downmix', 'Optionally downmix (e.g. 5.1 → stereo). A track already within the cap is left untouched.');
             [['Unchanged', 'Leave unchanged'], ['CapStereo', 'Cap at stereo (2.0)'], ['Cap51', 'Cap at 5.1'], ['CapCustom', 'Cap at custom count']]
                 .forEach(function (m) { cp.select.appendChild(opt(m[0], m[1], p.ChannelPolicy)); });
             host.appendChild(cp.wrap);
-            host.appendChild(labeledInput('pMaxAudioChannels', 'Custom max channels', 'number', p.MaxAudioChannels, null, { min: 1, max: 8 }));
+            var chRow = labeledInput('pMaxAudioChannels', 'Custom max channels', 'number', p.MaxAudioChannels, 'Maximum channel count, e.g. 2 for stereo.', { min: 1, max: 8 });
+            host.appendChild(chRow);
+            function syncAudio() { chRow.style.display = cp.select.value === 'CapCustom' ? '' : 'none'; }
+            cp.select.addEventListener('change', syncAudio); syncAudio();
 
-            // HDR / tonemap
-            host.appendChild(labeledCheckbox('pTonemapHdr', 'Tone-map HDR to SDR', p.TonemapHdr));
-            var tm = labeledSelect('pTonemapAlgorithm', 'Tone-map algorithm', 'From ffmpeg\'s tonemap filter.');
+            // ---------------- HDR ----------------
+            host.appendChild(subHeading('HDR / tone-mapping', 'Convert HDR (HDR10 / HLG) to SDR so it looks right on non-HDR screens.'));
+            host.appendChild(labeledCheckbox('pTonemapHdr', 'Tone-map HDR to SDR', p.TonemapHdr, 'Only affects HDR sources; SDR files are unchanged.'));
+            var tm = labeledSelect('pTonemapAlgorithm', 'Tone-map algorithm', 'From ffmpeg’s tonemap filter. “hable” is a good default.');
             (state.caps.TonemapAlgorithms || ['none']).forEach(function (a) { tm.select.appendChild(opt(a, a, p.TonemapAlgorithm)); });
             if (p.TonemapAlgorithm && (state.caps.TonemapAlgorithms || []).indexOf(p.TonemapAlgorithm) < 0) { tm.select.appendChild(opt(p.TonemapAlgorithm, p.TonemapAlgorithm, p.TonemapAlgorithm)); }
             host.appendChild(tm.wrap);
+            function syncHdr() { tm.wrap.style.display = document.getElementById('pTonemapHdr').checked ? '' : 'none'; }
+            document.getElementById('pTonemapHdr').addEventListener('change', syncHdr); syncHdr();
 
-            // container + output
-            var ct = labeledSelect('pContainer', 'Output container');
+            // ---------------- OUTPUT ----------------
+            host.appendChild(subHeading('Output', 'The container, and what happens to the finished file.'));
+            var ct = labeledSelect('pContainer', 'Output container', '<b>matroska (mkv)</b> keeps all audio + subtitle tracks and fonts. <b>mp4</b> is broadly compatible but <b>drops subtitles</b>.');
             (state.caps.Containers || []).forEach(function (c) { ct.select.appendChild(opt(c.Name, c.Name + ' — ' + c.Description, p.Container)); });
             if (p.Container && !(state.caps.Containers || []).some(function (c) { return c.Name === p.Container; })) { ct.select.appendChild(opt(p.Container, p.Container, p.Container)); }
             host.appendChild(ct.wrap);
-            var om = labeledSelect('pOutputMode', 'Output handling');
-            [['SeparateDirectory', 'Separate output directory (safest, originals untouched)'], ['AddAsAlternateVersion', 'Add as alternate version (best-effort)'], ['ReplaceInPlace', 'Replace original in place (after verify)']]
+            var om = labeledSelect('pOutputMode', 'Output handling', null);
+            [['SeparateDirectory', 'Separate output directory (safest — originals untouched)'], ['AddAsAlternateVersion', 'Add as alternate version (grouped with the original)'], ['ReplaceInPlace', 'Replace original in place (irreversible)']]
                 .forEach(function (m) { om.select.appendChild(opt(m[0], m[1], p.OutputMode)); });
             host.appendChild(om.wrap);
-            host.appendChild(labeledInput('pOutputDirectory', 'Output directory (for separate-directory mode)', 'text', p.OutputDirectory, null));
-            host.appendChild(labeledInput('pAlternateVersionLabel', 'Alternate-version label', 'text', p.AlternateVersionLabel,
-                'For "Add as alternate version": the output is written beside the source as <b>&lt;original&gt; - &lt;label&gt;.ext</b>. Jellyfin groups same-base-name files in a folder into one item, so this label is exactly what appears in its version selector (e.g. "H.264 1080p").'));
-            host.appendChild(labeledInput('pExtraVideoArgs', 'Extra ffmpeg video args (advanced)', 'text', p.ExtraVideoArgs, null));
-            host.appendChild(labeledInput('pExtraOutputArgs', 'Extra ffmpeg output args (advanced)', 'text', p.ExtraOutputArgs, null));
+            var omHint = el('div', { class: 'fieldDescription' });
+            host.appendChild(omHint);
+            var outDirRow = labeledInput('pOutputDirectory', 'Output directory', 'text', p.OutputDirectory, 'Where results are written. Leave empty to write beside the source. Point this <b>outside</b> your libraries to avoid duplicate items.');
+            var labelRow = labeledInput('pAlternateVersionLabel', 'Alternate-version label', 'text', p.AlternateVersionLabel, 'Shown in Jellyfin’s version selector, e.g. “H.264 1080p”. The transcode is linked to the original as an alternate version — your original file is not renamed.');
+            host.appendChild(outDirRow); host.appendChild(labelRow);
+            var OM_HINTS = {
+                SeparateDirectory: 'Writes a new file and leaves your originals completely untouched. Safest.',
+                AddAsAlternateVersion: 'Keeps both and registers the transcode as an alternate version of the same item (one movie, a version selector).',
+                ReplaceInPlace: '⚠ Replaces the original file after the output is verified. Reclaims space but is irreversible.'
+            };
+            function syncOutput() {
+                var m = om.select.value;
+                omHint.innerHTML = OM_HINTS[m] || '';
+                outDirRow.style.display = (m === 'SeparateDirectory') ? '' : 'none';
+                labelRow.style.display = (m === 'AddAsAlternateVersion') ? '' : 'none';
+            }
+            om.select.addEventListener('change', syncOutput); syncOutput();
 
-            vc.select.addEventListener('change', function () { fillEncoderSelect(ve.select, 'video', vc.select.value, ''); loadPresetSuggestions(ve.select.value, presetList, presetHint); });
-            ve.select.addEventListener('change', function () { loadPresetSuggestions(ve.select.value, presetList, presetHint); });
+            // ---------------- ADVANCED (collapsed) ----------------
+            host.appendChild(el('details', { style: 'margin-top:1.4em;padding-top:0.9em;border-top:1px solid rgba(128,128,128,.22);' }, [
+                el('summary', { text: 'Advanced — raw ffmpeg arguments', style: 'cursor:pointer;opacity:.85;' }),
+                el('div', { style: 'margin-top:0.6em;' }, [
+                    labeledInput('pExtraVideoArgs', 'Extra ffmpeg video args', 'text', p.ExtraVideoArgs, 'Appended to the video encode, e.g. "-tune film". Leave empty unless you know ffmpeg.'),
+                    labeledInput('pExtraOutputArgs', 'Extra ffmpeg output args', 'text', p.ExtraOutputArgs, 'Appended to the whole command. Advanced escape hatch.')
+                ])
+            ]));
+
+            // cascades
+            vc.select.addEventListener('change', function () { fillEncoderSelect(ve.select, 'video', vc.select.value, ''); buildPresetControl(presetControl, presetHint, ve.select.value, presetValue()); });
+            ve.select.addEventListener('change', function () { buildPresetControl(presetControl, presetHint, ve.select.value, presetValue()); });
             ac.select.addEventListener('change', function () { fillEncoderSelect(ae.select, 'audio', ac.select.value, ''); });
         }
 
