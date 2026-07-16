@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Jellyfin.Plugin.PreTranscode.Configuration;
 using Jellyfin.Plugin.PreTranscode.Encoding;
 using Jellyfin.Plugin.PreTranscode.Ffmpeg;
+using Jellyfin.Plugin.PreTranscode.Library;
 using Jellyfin.Plugin.PreTranscode.Media;
 using Jellyfin.Plugin.PreTranscode.Rules;
 using MediaBrowser.Common.Configuration;
@@ -23,6 +24,7 @@ internal sealed class TranscodeExecutor
     private readonly IJobQueue _queue;
     private readonly IMediaProber _prober;
     private readonly IMediaEncoder _mediaEncoder;
+    private readonly AlternateVersionMerger _merger;
     private readonly string _tempDirectory;
     private readonly ILogger<TranscodeExecutor> _logger;
 
@@ -30,12 +32,14 @@ internal sealed class TranscodeExecutor
         IJobQueue queue,
         IMediaProber prober,
         IMediaEncoder mediaEncoder,
+        AlternateVersionMerger merger,
         IApplicationPaths applicationPaths,
         ILogger<TranscodeExecutor> logger)
     {
         _queue = queue;
         _prober = prober;
         _mediaEncoder = mediaEncoder;
+        _merger = merger;
         _tempDirectory = Path.Combine(applicationPaths.DataPath, "pretranscode", "tmp");
         _logger = logger;
     }
@@ -134,6 +138,14 @@ internal sealed class TranscodeExecutor
             job.FinishedUtc = DateTime.UtcNow;
             _queue.Update(job);
             _logger.LogInformation("Completed {Path} -> {Output}", job.SourcePath, finalPath);
+
+            if (profile.OutputMode == OutputHandlingMode.AddAsAlternateVersion)
+            {
+                // Detached and on CancellationToken.None: registering the alternate version waits for a
+                // library scan to index the new file, which can take minutes and must not hold the
+                // transcode's concurrency slot or be cancelled when this job completes.
+                _ = _merger.TryMergeAsync(job.SourcePath, finalPath, CancellationToken.None);
+            }
         }
         catch (OperationCanceledException)
         {

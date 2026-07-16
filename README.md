@@ -130,8 +130,13 @@ All settings live on the plugin's page (**Dashboard → Plugins → Pre-Transcod
   alongside the source with a suffix), leaving originals untouched.
 - **Replace in place** — after verification, replaces the original (deleting it if the container/
   extension changed). Reclaims space, irreversible.
-- **Add as alternate version** — writes a sibling file next to the original. *Best-effort:* Jellyfin
-  has no stable plugin API to register alternate versions, so this simply places a companion file.
+- **Add as alternate version** — writes a companion file next to the original and then **registers it
+  as a Jellyfin alternate version** the same way the dashboard's *Merge Versions* does: a database link
+  (the source stays the primary version), **not** a filename convention — so your original file keeps
+  its name and the two show up as one movie with a version selector. It waits for a library scan to
+  index the new file (nudging one if needed), so registration completes shortly after the encode.
+  *Best-effort:* if the item cannot be indexed/linked, the companion file is still on disk and can be
+  merged manually.
 
 ## Usage
 

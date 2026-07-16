@@ -20,6 +20,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<IFfmpegCapabilitiesService, FfmpegCapabilitiesService>();
         serviceCollection.AddSingleton<IMediaProber, MediaProber>();
         serviceCollection.AddSingleton<IJobQueue, JobQueue>();
+        serviceCollection.AddSingleton<AlternateVersionMerger>();
         serviceCollection.AddSingleton<TranscodeExecutor>();
 
         serviceCollection.AddSingleton<QueueProcessor>();
