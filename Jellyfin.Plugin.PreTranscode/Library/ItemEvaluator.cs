@@ -27,6 +27,8 @@ public sealed class ItemEvaluator
     private readonly ILibraryManager _libraryManager;
     private readonly ILogger<ItemEvaluator> _logger;
 
+    private int _sweepRunning;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="ItemEvaluator"/> class.
     /// </summary>
@@ -42,36 +44,52 @@ public sealed class ItemEvaluator
         _logger = logger;
     }
 
+    // Only one sweep runs at a time: the scheduled task, the post-scan hook and the dashboard's
+    // "Scan library now" button can all land at once, and each sweep ffprobes every item.
     internal async Task<int> SweepAsync(IProgress<double>? progress, CancellationToken cancellationToken)
     {
-        var config = Plugin.Instance?.Configuration;
-        if (config is null || !config.Enabled)
+        if (Interlocked.CompareExchange(ref _sweepRunning, 1, 0) == 1)
         {
+            _logger.LogInformation("A Pre-Transcode sweep is already running; skipping this one");
             progress?.Report(100);
             return 0;
         }
 
-        var items = _libraryManager.GetItemList(new InternalItemsQuery
+        try
         {
-            MediaTypes = new[] { MediaType.Video },
-            Recursive = true,
-            IsVirtualItem = false
-        });
-
-        var enqueued = 0;
-        for (var i = 0; i < items.Count; i++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (await EvaluateAndEnqueueAsync(items[i], cancellationToken).ConfigureAwait(false))
+            var config = Plugin.Instance?.Configuration;
+            if (config is null || !config.Enabled)
             {
-                enqueued++;
+                progress?.Report(100);
+                return 0;
             }
 
-            progress?.Report((i + 1) * 100.0 / Math.Max(1, items.Count));
-        }
+            var items = _libraryManager.GetItemList(new InternalItemsQuery
+            {
+                MediaTypes = new[] { MediaType.Video },
+                Recursive = true,
+                IsVirtualItem = false
+            });
 
-        _logger.LogInformation("Pre-Transcode sweep queued {Count} job(s) from {Total} item(s)", enqueued, items.Count);
-        return enqueued;
+            var enqueued = 0;
+            for (var i = 0; i < items.Count; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (await EvaluateAndEnqueueAsync(items[i], cancellationToken).ConfigureAwait(false))
+                {
+                    enqueued++;
+                }
+
+                progress?.Report((i + 1) * 100.0 / Math.Max(1, items.Count));
+            }
+
+            _logger.LogInformation("Pre-Transcode sweep queued {Count} job(s) from {Total} item(s)", enqueued, items.Count);
+            return enqueued;
+        }
+        finally
+        {
+            Volatile.Write(ref _sweepRunning, 0);
+        }
     }
 
     internal async Task<bool> EvaluateAndEnqueueAsync(BaseItem item, CancellationToken cancellationToken)

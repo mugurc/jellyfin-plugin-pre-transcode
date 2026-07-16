@@ -1,7 +1,7 @@
 ---
 name: "Pre-Transcode"
 guid: "8da245f6-7244-449b-9f32-46043f34b5f0"
-version: "0.2.0.0"
+version: "0.3.0.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "Pre-transcode media to an admin-defined compatibility baseline."
@@ -16,7 +16,8 @@ owner: "mugurc"
 artifacts:
 - "Jellyfin.Plugin.PreTranscode.dll"
 changelog: >
-  0.2.0.0 - The "add as alternate version" output mode now uses a configurable version label.
-  The output is named "<original> - <label>.<ext>", which is Jellyfin's native naming convention
-  for alternate versions, so the label (e.g. "H.264 1080p") is what appears in Jellyfin's version
-  selector instead of a hardcoded "pretranscode".
+  0.3.0.0 - Adds a "Scan library now" button (plugin page and queue page) so a sweep can be
+  triggered on demand instead of waiting for the schedule; puts the queue/status page in the
+  dashboard sidebar as its own entry; and shows elapsed time plus an estimated time remaining
+  for running jobs (and total duration for finished ones). Sweeps are now guarded so the
+  scheduled task, the post-scan hook and the button can never overlap.

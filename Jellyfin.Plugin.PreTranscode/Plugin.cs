@@ -53,10 +53,15 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
                 Name = Name,
                 EmbeddedResourcePath = string.Format(CultureInfo.InvariantCulture, "{0}.Configuration.configPage.html", ns)
             },
+            // EnableInMainMenu puts the queue/status page in the dashboard's own sidebar, so the
+            // day-to-day view is one click away instead of buried under Plugins -> Pre-Transcode.
             new PluginPageInfo
             {
                 Name = "PreTranscodeQueue",
-                EmbeddedResourcePath = string.Format(CultureInfo.InvariantCulture, "{0}.Configuration.queuePage.html", ns)
+                DisplayName = "Pre-Transcode",
+                EmbeddedResourcePath = string.Format(CultureInfo.InvariantCulture, "{0}.Configuration.queuePage.html", ns),
+                EnableInMainMenu = true,
+                MenuIcon = "video_settings"
             }
         ];
     }

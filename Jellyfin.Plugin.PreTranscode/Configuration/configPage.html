@@ -13,7 +13,10 @@
             <div class="verticalSection">
                 <div class="sectionTitleContainer flex align-items-center">
                     <h2 class="sectionTitle">Pre-Transcode</h2>
-                    <a is="emby-linkbutton" class="raised button-alt" href="#" id="lnkQueue" style="margin-left:1.5em;">
+                    <button is="emby-button" type="button" id="btnSweep" class="raised" style="margin-left:1.5em;">
+                        <span>Scan library now</span>
+                    </button>
+                    <a is="emby-linkbutton" class="raised button-alt" href="#" id="lnkQueue" style="margin-left:0.8em;">
                         <span>Queue &amp; status &raquo;</span>
                     </a>
                 </div>
@@ -522,6 +525,16 @@
         });
         page.querySelector('#btnAddResPreset').addEventListener('click', function () { saveResPresets(); state.config.ResolutionPresets.push({ Id: guid(), Name: 'New', Width: 1920, Height: 1080 }); renderResPresets(); });
         page.querySelector('#btnAddRule').addEventListener('click', function () { state.config.GlobalRules.push(newRule()); renderRules('GlobalRules', state.config.GlobalRules); });
+        page.querySelector('#btnSweep').addEventListener('click', function () {
+            Dashboard.showLoadingMsg();
+            ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('PreTranscode/Sweep') }).then(function () {
+                Dashboard.hideLoadingMsg();
+                Dashboard.alert('Library scan started. It uses your saved settings, so save first if you just changed anything. Watch it on the Queue & status page.');
+            }, function () {
+                Dashboard.hideLoadingMsg();
+                Dashboard.alert('Could not start the library scan.');
+            });
+        });
         page.querySelector('#lnkQueue').addEventListener('click', function (e) { e.preventDefault(); Dashboard.navigate('configurationpage?name=PreTranscodeQueue'); });
         page.querySelector('#PreTranscodeConfigForm').addEventListener('submit', function (e) { e.preventDefault(); save(); return false; });
 

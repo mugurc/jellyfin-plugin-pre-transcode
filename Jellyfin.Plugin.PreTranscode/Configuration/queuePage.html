@@ -18,6 +18,7 @@
                 </div>
                 <p class="fieldDescription" id="summary">Loading&hellip;</p>
                 <div class="flex align-items-center" style="gap:0.6em;flex-wrap:wrap;margin:0.5em 0;">
+                    <button is="emby-button" type="button" id="btnSweep" class="raised"><span>Scan library now</span></button>
                     <button is="emby-button" type="button" id="btnPause" class="raised button-alt"><span>Pause queue</span></button>
                     <button is="emby-button" type="button" id="btnResume" class="raised button-alt"><span>Resume queue</span></button>
                     <button is="emby-button" type="button" id="btnClear" class="raised button-alt"><span>Clear finished</span></button>
@@ -31,6 +32,7 @@
                             <th style="padding:0.4em;">Item</th>
                             <th style="padding:0.4em;width:9em;">Status</th>
                             <th style="padding:0.4em;width:12em;">Progress</th>
+                            <th style="padding:0.4em;width:11em;">Time</th>
                             <th style="padding:0.4em;width:12em;">Actions</th>
                         </tr>
                     </thead>
@@ -50,6 +52,42 @@
         }
 
         function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+
+        // Timestamps come from the API as UTC; guard against a missing zone marker so elapsed
+        // time is not silently shifted by the browser's offset.
+        function parseUtc(s) {
+            if (!s) { return null; }
+            var d = new Date(/[Zz]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s + 'Z');
+            return isNaN(d.getTime()) ? null : d;
+        }
+
+        function fmtDuration(sec) {
+            if (!isFinite(sec) || sec < 0) { return ''; }
+            sec = Math.round(sec);
+            var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+            if (h > 0) { return h + 'h ' + m + 'm'; }
+            if (m > 0) { return m + 'm ' + s + 's'; }
+            return s + 's';
+        }
+
+        function timeInfo(job) {
+            var started = parseUtc(job.StartedUtc);
+            if (!started) { return ''; }
+
+            if (job.Status === 'Processing') {
+                var elapsed = (Date.now() - started.getTime()) / 1000;
+                var text = fmtDuration(elapsed) + ' elapsed';
+                var pct = job.Progress || 0;
+                // Linear extrapolation; only once there is enough progress for it to mean anything.
+                if (pct >= 2) {
+                    text += ' · ~' + fmtDuration(elapsed * (100 - pct) / pct) + ' left';
+                }
+                return text;
+            }
+
+            var finished = parseUtc(job.FinishedUtc);
+            return finished ? 'took ' + fmtDuration((finished.getTime() - started.getTime()) / 1000) : '';
+        }
 
         function actionButton(label, cls, fn) {
             var b = document.createElement('button');
@@ -88,7 +126,9 @@
                 }
                 var progressCell = '<td style="padding:0.4em;">' + bar + '</td>';
 
-                tr.innerHTML = itemCell + statusCell + progressCell + '<td style="padding:0.4em;" class="actions"></td>';
+                var timeCell = '<td style="padding:0.4em;"><span class="fieldDescription">' + esc(timeInfo(job)) + '</span></td>';
+
+                tr.innerHTML = itemCell + statusCell + progressCell + timeCell + '<td style="padding:0.4em;" class="actions"></td>';
 
                 var actions = tr.querySelector('.actions');
                 if (job.Status === 'Pending' || job.Status === 'Processing') {
@@ -117,6 +157,7 @@
         }
 
         page.querySelector('#lnkSettings').addEventListener('click', function (e) { e.preventDefault(); Dashboard.navigate('configurationpage?name=Pre-Transcode'); });
+        page.querySelector('#btnSweep').addEventListener('click', function () { api('POST', 'Sweep').then(function () { setTimeout(load, 1000); }); });
         page.querySelector('#btnPause').addEventListener('click', function () { api('POST', 'Queue/Pause').then(load); });
         page.querySelector('#btnResume').addEventListener('click', function () { api('POST', 'Queue/Resume').then(load); });
         page.querySelector('#btnClear').addEventListener('click', function () { api('POST', 'Jobs/ClearFinished').then(load); });

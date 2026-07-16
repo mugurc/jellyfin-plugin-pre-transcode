@@ -9,6 +9,14 @@
     "imageUrl": "",
     "versions": [
       {
+        "version": "0.3.0.0",
+        "changelog": "Adds a \"Scan library now\" button (plugin page and queue page) so a sweep can be triggered on demand instead of waiting for the schedule; puts the queue/status page in the dashboard sidebar as its own entry; and shows elapsed time plus an estimated time remaining for running jobs (and total duration for finished ones). Sweeps are now guarded so the scheduled task, the post-scan hook and the button can never overlap.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases/download/v0.3.0.0/pre-transcode-0.3.0.0.zip",
+        "checksum": "593592baa45a5d945a085e9c5bbde03b",
+        "timestamp": "2026-07-16T14:35:39Z"
+      },
+      {
         "version": "0.2.0.0",
         "changelog": "The \"add as alternate version\" output mode now uses a configurable version label. Output is named \"<original> - <label>.<ext>\", which is Jellyfin's native naming convention for alternate versions, so your label (e.g. \"H.264 1080p\") is what appears in Jellyfin's version selector instead of a hardcoded \"pretranscode\".",
         "targetAbi": "10.11.0.0",

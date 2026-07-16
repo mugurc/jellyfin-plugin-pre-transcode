@@ -7,9 +7,11 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.PreTranscode.Ffmpeg;
 using Jellyfin.Plugin.PreTranscode.Jobs;
+using Jellyfin.Plugin.PreTranscode.Library;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.PreTranscode.Api;
 
@@ -26,6 +28,8 @@ public class PreTranscodeController : ControllerBase
     private readonly IFfmpegCapabilitiesService _capabilities;
     private readonly IJobQueue _queue;
     private readonly IQueueController _queueController;
+    private readonly ItemEvaluator _evaluator;
+    private readonly ILogger<PreTranscodeController> _logger;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PreTranscodeController"/> class.
@@ -33,11 +37,20 @@ public class PreTranscodeController : ControllerBase
     /// <param name="capabilities">The ffmpeg capabilities service.</param>
     /// <param name="queue">The job queue.</param>
     /// <param name="queueController">The runtime queue controller.</param>
-    public PreTranscodeController(IFfmpegCapabilitiesService capabilities, IJobQueue queue, IQueueController queueController)
+    /// <param name="evaluator">The library item evaluator.</param>
+    /// <param name="logger">The logger.</param>
+    public PreTranscodeController(
+        IFfmpegCapabilitiesService capabilities,
+        IJobQueue queue,
+        IQueueController queueController,
+        ItemEvaluator evaluator,
+        ILogger<PreTranscodeController> logger)
     {
         _capabilities = capabilities;
         _queue = queue;
         _queueController = queueController;
+        _evaluator = evaluator;
+        _logger = logger;
     }
 
     /// <summary>
@@ -96,6 +109,31 @@ public class PreTranscodeController : ControllerBase
             Skipped = jobs.Count(j => j.Status == JobStatus.Skipped),
             Total = jobs.Count
         });
+    }
+
+    /// <summary>
+    /// Starts a library sweep in the background: evaluates every library item against the active
+    /// rules and queues the matches. Same work as the "Pre-Transcode: sweep library" scheduled task,
+    /// triggerable from the plugin page. Returns immediately; watch the queue page for progress.
+    /// </summary>
+    /// <returns>Accepted.</returns>
+    [HttpPost("Sweep")]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    public ActionResult StartSweep()
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _evaluator.SweepAsync(null, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Manually triggered sweep failed");
+            }
+        });
+
+        return Accepted();
     }
 
     /// <summary>
