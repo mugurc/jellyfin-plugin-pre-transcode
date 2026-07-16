@@ -44,6 +44,30 @@ internal static class OutputApplier
         };
     }
 
+    /// <summary>
+    /// The primary output path this profile would first write for the given source (before any
+    /// uniqueness suffix), or <c>null</c> for <see cref="OutputHandlingMode.ReplaceInPlace"/> where no
+    /// distinct sibling/target is created. Used to detect — independently of the job queue — that a
+    /// source has already been transcoded, so repeated sweeps don't redo it.
+    /// </summary>
+    /// <param name="profile">The encoding profile.</param>
+    /// <param name="sourcePath">The source file path.</param>
+    /// <returns>The expected output path, or <c>null</c>.</returns>
+    internal static string? ExpectedOutputPath(EncodingProfile profile, string sourcePath)
+    {
+        var extension = ContainerExtension(profile.Container);
+        var directory = Path.GetDirectoryName(sourcePath) ?? ".";
+        var stem = Path.GetFileNameWithoutExtension(sourcePath);
+        return profile.OutputMode switch
+        {
+            OutputHandlingMode.AddAsAlternateVersion => Path.Combine(directory, stem + " - " + SanitizeLabel(profile.AlternateVersionLabel) + extension),
+            OutputHandlingMode.SeparateDirectory => Path.Combine(
+                string.IsNullOrWhiteSpace(profile.OutputDirectory) ? directory : profile.OutputDirectory,
+                stem + extension),
+            _ => null
+        };
+    }
+
     private static string ReplaceInPlace(string sourcePath, string tempOutputPath, string extension)
     {
         var directory = Path.GetDirectoryName(sourcePath) ?? ".";

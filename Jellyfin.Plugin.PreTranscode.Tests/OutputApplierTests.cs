@@ -169,6 +169,31 @@ public class OutputApplierTests
     }
 
     [Fact]
+    public void ExpectedOutputPath_AlternateVersion_MatchesActualNaming()
+    {
+        var src = Path.Combine("/movies", "movie.mkv");
+        var expected = OutputApplier.ExpectedOutputPath(Profile(OutputHandlingMode.AddAsAlternateVersion, "mkv", label: "H.264 1080p"), src);
+        Assert.Equal(Path.Combine("/movies", "movie - H.264 1080p.mkv"), expected);
+    }
+
+    [Fact]
+    public void ExpectedOutputPath_SeparateDirectory_UsesConfiguredDirOrSourceDir()
+    {
+        var src = Path.Combine("/movies", "movie.mkv");
+        Assert.Equal(Path.Combine("/out", "movie.mp4"),
+            OutputApplier.ExpectedOutputPath(Profile(OutputHandlingMode.SeparateDirectory, "mp4", "/out"), src));
+        Assert.Equal(Path.Combine("/movies", "movie.mp4"),
+            OutputApplier.ExpectedOutputPath(Profile(OutputHandlingMode.SeparateDirectory, "mp4", string.Empty), src));
+    }
+
+    [Fact]
+    public void ExpectedOutputPath_ReplaceInPlace_IsNull()
+    {
+        var src = Path.Combine("/movies", "movie.mkv");
+        Assert.Null(OutputApplier.ExpectedOutputPath(Profile(OutputHandlingMode.ReplaceInPlace, "mp4"), src));
+    }
+
+    [Fact]
     public void SeparateDirectory_NeverClobbersSource_WhenSameDirAndExtension()
     {
         var work = NewWorkDir();

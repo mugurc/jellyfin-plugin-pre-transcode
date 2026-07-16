@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
 using Jellyfin.Plugin.PreTranscode.Configuration;
+using Jellyfin.Plugin.PreTranscode.Encoding;
 using Jellyfin.Plugin.PreTranscode.Jobs;
 using Jellyfin.Plugin.PreTranscode.Media;
 using Jellyfin.Plugin.PreTranscode.Rules;
@@ -22,6 +23,10 @@ namespace Jellyfin.Plugin.PreTranscode.Library;
 /// </summary>
 public sealed class ItemEvaluator
 {
+    // After this many failed attempts for the same source+profile, stop auto-retrying it on every
+    // sweep; the admin can still Requeue it manually from the queue page.
+    private const int MaxAutoFailedAttempts = 3;
+
     private readonly IJobQueue _queue;
     private readonly IMediaProber _prober;
     private readonly ILibraryManager _libraryManager;
@@ -117,6 +122,18 @@ public sealed class ItemEvaluator
             return false;
         }
 
+        // Idempotency across sweeps. The compliance check further down only prevents a repeat for
+        // Replace-in-place (where the source itself becomes compliant); the separate-directory and
+        // alternate-version modes leave the source unchanged, so without this it would be re-transcoded
+        // on every daily sweep, piling up duplicate outputs. Skip when either (a) the expected output
+        // for this profile already exists on disk (robust — survives clearing the queue), or (b) the
+        // queue records a completed transcode for it, or it has failed too many times to keep retrying.
+        if (OutputAlreadyExists(profile, path)
+            || AlreadyHandled(_queue.GetJobs(), path, profile.Id, File.Exists, MaxAutoFailedAttempts))
+        {
+            return false;
+        }
+
         var probe = await _prober.ProbeAsync(path, cancellationToken).ConfigureAwait(false);
         if (probe is null)
         {
@@ -170,6 +187,51 @@ public sealed class ItemEvaluator
         {
             return false;
         }
+    }
+
+    // Queue-independent: true when the profile's expected output for this source already exists on disk
+    // (a distinct file, not the source itself). Survives clearing the job queue.
+    private static bool OutputAlreadyExists(EncodingProfile profile, string sourcePath)
+    {
+        var expected = OutputApplier.ExpectedOutputPath(profile, sourcePath);
+        return expected is not null
+            && !string.Equals(expected, sourcePath, StringComparison.OrdinalIgnoreCase)
+            && File.Exists(expected);
+    }
+
+    // True when this source should not be auto-queued again for this profile: it either already has a
+    // completed transcode whose output still exists, or it has failed at least maxFailedAttempts times.
+    // Pure over the job list (outputExists is injected) so it is unit-testable.
+    internal static bool AlreadyHandled(
+        IEnumerable<TranscodeJob> jobs,
+        string sourcePath,
+        string profileId,
+        Func<string, bool> outputExists,
+        int maxFailedAttempts)
+    {
+        var failed = 0;
+        foreach (var job in jobs)
+        {
+            if (!string.Equals(job.SourcePath, sourcePath, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(job.ProfileId, profileId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (job.Status == JobStatus.Completed
+                && !string.IsNullOrEmpty(job.OutputPath)
+                && outputExists(job.OutputPath))
+            {
+                return true;
+            }
+
+            if (job.Status == JobStatus.Failed)
+            {
+                failed++;
+            }
+        }
+
+        return maxFailedAttempts > 0 && failed >= maxFailedAttempts;
     }
 
     private (EncodingProfile? Profile, IReadOnlyList<TriggerRule> Rules, bool Enabled) ResolveForLibrary(PluginConfiguration config, BaseItem item)

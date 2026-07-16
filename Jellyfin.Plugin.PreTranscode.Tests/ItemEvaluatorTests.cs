@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using Jellyfin.Plugin.PreTranscode.Jobs;
 using Jellyfin.Plugin.PreTranscode.Library;
 
 namespace Jellyfin.Plugin.PreTranscode.Tests;
@@ -47,5 +49,56 @@ public class ItemEvaluatorTests
         {
             File.Delete(path);
         }
+    }
+
+    private static TranscodeJob Job(string src, string profile, JobStatus status, string output = "") =>
+        new() { SourcePath = src, ProfileId = profile, Status = status, OutputPath = output };
+
+    [Fact]
+    public void AlreadyHandled_TrueWhenCompletedForSameProfileAndOutputExists()
+    {
+        var jobs = new[] { Job("/a.mkv", "p1", JobStatus.Completed, "/out.mkv") };
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => true, 3));
+    }
+
+    [Fact]
+    public void AlreadyHandled_FalseWhenCompletedOutputMissing()
+    {
+        var jobs = new[] { Job("/a.mkv", "p1", JobStatus.Completed, "/out.mkv") };
+        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => false, 3));
+    }
+
+    [Fact]
+    public void AlreadyHandled_FalseForDifferentProfileOrSource()
+    {
+        var jobs = new[]
+        {
+            Job("/a.mkv", "p2", JobStatus.Completed, "/out.mkv"), // different profile
+            Job("/b.mkv", "p1", JobStatus.Completed, "/out.mkv"), // different source
+        };
+        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => true, 3));
+    }
+
+    [Fact]
+    public void AlreadyHandled_TrueAfterMaxFailedAttempts()
+    {
+        var jobs = new[]
+        {
+            Job("/a.mkv", "p1", JobStatus.Failed),
+            Job("/a.mkv", "p1", JobStatus.Failed),
+            Job("/a.mkv", "p1", JobStatus.Failed),
+        };
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => false, 3));
+    }
+
+    [Fact]
+    public void AlreadyHandled_FalseBelowMaxFailedAttempts()
+    {
+        var jobs = new[]
+        {
+            Job("/a.mkv", "p1", JobStatus.Failed),
+            Job("/a.mkv", "p1", JobStatus.Failed),
+        };
+        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => false, 3));
     }
 }
