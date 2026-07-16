@@ -9,6 +9,14 @@
     "imageUrl": "",
     "versions": [
       {
+        "version": "0.5.1.0",
+        "changelog": "Fixes the automatic library sweep re-transcoding files it had already produced output for. In the separate-directory and add-as-alternate-version modes the original source is left unchanged, so every daily sweep re-queued and re-encoded the same files, piling up duplicate outputs. A source is now skipped when the profile's expected output already exists on disk (robust — this survives clearing the job queue) or the queue records a completed transcode for it, and a source that keeps failing is no longer auto-retried after 3 attempts (it can still be requeued manually).",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases/download/v0.5.1.0/pre-transcode-0.5.1.0.zip",
+        "checksum": "d36e8486c7317a241ad77196b76389fc",
+        "timestamp": "2026-07-16T22:19:55Z"
+      },
+      {
         "version": "0.5.0.0",
         "changelog": "Settings page redesign for clarity: the profile editor is grouped into labelled Video / Resolution / Audio / HDR / Output sections, fields that don't apply are hidden (e.g. CRF only in constant-quality mode, the alternate-version label only for that output mode), every field carries an inline explanation, and advanced ffmpeg arguments are tucked into a collapsed section. The encoder preset is now a real dropdown when ffmpeg enumerates presets (e.g. libx264/x265), falling back to a free-text field with suggestions otherwise. The Queue & status page gains a \"Cancel all\" button that stops every pending and processing job at once.",
         "targetAbi": "10.11.0.0",

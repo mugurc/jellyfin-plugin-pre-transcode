@@ -1,7 +1,7 @@
 ---
 name: "Pre-Transcode"
 guid: "8da245f6-7244-449b-9f32-46043f34b5f0"
-version: "0.5.0.0"
+version: "0.5.1.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "Pre-transcode media to an admin-defined compatibility baseline."
@@ -16,11 +16,10 @@ owner: "mugurc"
 artifacts:
 - "Jellyfin.Plugin.PreTranscode.dll"
 changelog: >
-  0.5.0.0 - Settings page redesign for clarity: the profile editor is grouped into labelled
-  Video / Resolution / Audio / HDR / Output sections, fields that don't apply are now hidden
-  (e.g. CRF only shows in constant-quality mode, bitrate fields only in bitrate mode, the
-  alternate-version label only for that output mode), every field carries an inline explanation,
-  and advanced ffmpeg arguments are tucked into a collapsed section. The encoder preset is now a
-  real dropdown when ffmpeg enumerates presets (e.g. libx264/x265), falling back to a free-text
-  field with suggestions for encoders it can't. The Queue & status page gains a "Cancel all"
-  button that stops every pending and processing job at once.
+  0.5.1.0 - Fixes the automatic library sweep re-transcoding files it had already produced output
+  for. In the separate-directory and add-as-alternate-version modes the original source is left
+  unchanged, so every daily sweep re-queued and re-encoded the same files, piling up duplicate
+  outputs. A source is now skipped when the profile's expected output already exists on disk
+  (robust — this survives clearing the job queue) or the queue records a completed transcode for it,
+  and a source that keeps failing is no longer auto-retried after 3 attempts (it can still be
+  requeued manually from the queue page).
