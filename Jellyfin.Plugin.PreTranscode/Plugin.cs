@@ -24,6 +24,14 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         : base(applicationPaths, xmlSerializer)
     {
         Instance = this;
+
+        // Runs once the saved config has been loaded by the base constructor: removes any duplicate
+        // presets/profiles/rules left by older builds and seeds first-run defaults. Persist only if it
+        // actually changed something, so we don't rewrite the config on every startup.
+        if (ConfigurationInitializer.Normalize(Configuration))
+        {
+            SaveConfiguration();
+        }
     }
 
     /// <inheritdoc />

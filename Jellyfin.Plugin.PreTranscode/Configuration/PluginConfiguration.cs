@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using MediaBrowser.Model.Plugins;
 
@@ -12,49 +11,30 @@ namespace Jellyfin.Plugin.PreTranscode.Configuration;
 public class PluginConfiguration : BasePluginConfiguration
 {
     /// <summary>
-    /// Initializes a new instance of the <see cref="PluginConfiguration"/> class with safe defaults:
-    /// the plugin loads but does nothing until an admin enables at least one rule.
+    /// Initializes a new instance of the <see cref="PluginConfiguration"/> class.
     /// </summary>
+    /// <remarks>
+    /// The collections deliberately start <b>empty</b>. Jellyfin loads a saved config by constructing
+    /// this object and then letting <see cref="System.Xml.Serialization.XmlSerializer"/> <em>add</em>
+    /// each stored element to these lists — it does not clear them first. Any defaults seeded in the
+    /// constructor would therefore be <em>appended to</em>, and duplicated alongside, the saved items
+    /// on every load (the "presets/rules multiply after each update" bug). First-run defaults are
+    /// instead seeded exactly once, after loading, by <see cref="ConfigurationInitializer.Normalize"/>.
+    /// </remarks>
     public PluginConfiguration()
     {
-        ResolutionPresets = new List<ResolutionPreset>
-        {
-            new ResolutionPreset { Id = "2160p", Name = "2160p (4K UHD)", Width = 3840, Height = 2160 },
-            new ResolutionPreset { Id = "1080p", Name = "1080p (Full HD)", Width = 1920, Height = 1080 },
-            new ResolutionPreset { Id = "720p", Name = "720p (HD)", Width = 1280, Height = 720 },
-            new ResolutionPreset { Id = "480p", Name = "480p (SD)", Width = 854, Height = 480 }
-        };
-
-        var defaultProfile = new EncodingProfile
-        {
-            Id = Guid.NewGuid().ToString("N"),
-            Name = "Compatibility Baseline (H.264 / AAC / MP4)"
-        };
-        Profiles = new List<EncodingProfile> { defaultProfile };
-        DefaultProfileId = defaultProfile.Id;
-
-        GlobalRules = new List<TriggerRule>
-        {
-            new TriggerRule
-            {
-                Id = Guid.NewGuid().ToString("N"),
-                Name = "Example: video is not H.264",
-                Enabled = false,
-                Combine = ConditionCombine.All,
-                Conditions = new List<RuleCondition>
-                {
-                    new RuleCondition
-                    {
-                        Type = ConditionType.VideoCodec,
-                        Operator = ComparisonOperator.NotEquals,
-                        Value = "h264"
-                    }
-                }
-            }
-        };
-
+        Profiles = new List<EncodingProfile>();
+        ResolutionPresets = new List<ResolutionPreset>();
+        GlobalRules = new List<TriggerRule>();
         LibraryOverrides = new List<LibraryOverride>();
     }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether first-run defaults have already been seeded. Prevents
+    /// re-seeding defaults an admin has deliberately removed. Absent (false) in configs written by
+    /// versions before this flag existed; those are treated as already-populated and only de-duplicated.
+    /// </summary>
+    public bool DefaultsSeeded { get; set; }
 
     /// <summary>
     /// Gets or sets a value indicating whether the plugin is enabled. When off, nothing is evaluated or queued.
