@@ -1,7 +1,7 @@
 ---
 name: "Pre-Transcode"
 guid: "8da245f6-7244-449b-9f32-46043f34b5f0"
-version: "0.4.0.0"
+version: "0.5.0.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "Pre-transcode media to an admin-defined compatibility baseline."
@@ -16,16 +16,11 @@ owner: "mugurc"
 artifacts:
 - "Jellyfin.Plugin.PreTranscode.dll"
 changelog: >
-  0.4.0.0 - Preserves every audio track (all languages) on transcode: a track already in the
-  target codec is copied losslessly, the rest are re-encoded, and each is downmixed only if it
-  individually exceeds the channel cap. For Matroska (mkv) outputs, all subtitle tracks and
-  embedded fonts (for ASS/SSA) are carried across as well. Fixes resolution presets and trigger
-  rules multiplying on every server start/update (constructor-seeded defaults were appended to,
-  rather than replacing, the saved configuration on each load); pre-existing duplicates are now
-  cleaned up automatically on load. Newly-added items still being copied or downloaded are now
-  deferred and re-checked until the file settles, so "queue new items automatically" fires
-  shortly after a file lands instead of waiting for the daily sweep. The "Add as alternate
-  version" output mode now registers the transcoded copy as a proper Jellyfin alternate version
-  (a Merge-Versions database link, with the source kept as the primary) instead of only placing a
-  companion file, so the original and the transcode appear as one movie with a version selector
-  without renaming your original file.
+  0.5.0.0 - Settings page redesign for clarity: the profile editor is grouped into labelled
+  Video / Resolution / Audio / HDR / Output sections, fields that don't apply are now hidden
+  (e.g. CRF only shows in constant-quality mode, bitrate fields only in bitrate mode, the
+  alternate-version label only for that output mode), every field carries an inline explanation,
+  and advanced ffmpeg arguments are tucked into a collapsed section. The encoder preset is now a
+  real dropdown when ffmpeg enumerates presets (e.g. libx264/x265), falling back to a free-text
+  field with suggestions for encoders it can't. The Queue & status page gains a "Cancel all"
+  button that stops every pending and processing job at once.
