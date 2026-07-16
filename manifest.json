@@ -12,9 +12,9 @@
         "version": "0.1.0.0",
         "changelog": "Initial release: dynamic ffmpeg-driven configuration, rules engine, per-library overrides, persistent job queue + verifying worker, library-scan hook, item-added monitor and a daily sweep scheduled task.",
         "targetAbi": "10.11.0.0",
-        "sourceUrl": "https://github.com/OWNER/jellyfin-plugin-pre-transcode/releases/download/v0.1.0.0/pre-transcode-0.1.0.0.zip",
-        "checksum": "REPLACE_WITH_ZIP_MD5",
-        "timestamp": "2026-07-16T00:00:00Z"
+        "sourceUrl": "https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases/download/v0.1.0.0/pre-transcode-0.1.0.0.zip",
+        "checksum": "02f6918d0a6ae7165425cb0431a6f6fe",
+        "timestamp": "2026-07-16T10:31:28Z"
       }
     ]
   }

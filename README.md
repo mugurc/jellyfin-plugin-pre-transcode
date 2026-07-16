@@ -72,10 +72,16 @@ containers, library-aware rules, and everything configured from the Jellyfin das
 
 ## Installing
 
-### Option A — plugin repository (recommended once published)
+### Option A — plugin repository (recommended)
 
-Add the custom repository (Dashboard → Plugins → Repositories) using the raw URL of this repo's
-[`manifest.json`](manifest.json), then install **Pre-Transcode** from the catalog and restart.
+In Jellyfin: **Dashboard → Plugins → Repositories → +**, and add this URL:
+
+```
+https://raw.githubusercontent.com/mugurc/jellyfin-plugin-pre-transcode/main/manifest.json
+```
+
+Then install **Pre-Transcode** from **Catalog** and restart the server. Installing from the
+repository (rather than side-loading) also lets Jellyfin show the plugin's details and offer updates.
 
 ### Option B — manual
 
