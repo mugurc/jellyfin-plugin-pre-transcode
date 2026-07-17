@@ -1,7 +1,7 @@
 ---
 name: "Pre-Transcode"
 guid: "8da245f6-7244-449b-9f32-46043f34b5f0"
-version: "0.5.2.0"
+version: "0.5.3.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "Pre-transcode media to an admin-defined compatibility baseline."
@@ -16,10 +16,15 @@ owner: "mugurc"
 artifacts:
 - "Jellyfin.Plugin.PreTranscode.dll"
 changelog: >
-  0.5.2.0 - Fixes mp4 sources failing within seconds of starting whenever the output container is
-  Matroska. Subtitles in an mp4 are mov_text, which Matroska cannot store, so copying them made the
-  muxer reject the output header and abort the whole transcode (ffmpeg exit code 218, "Function not
-  implemented"). Subtitle tracks are now handled individually: those the output container can store
-  are copied verbatim, and the rest are converted to a text format it can (srt, or WebVTT for webm).
-  mp4 sources therefore transcode successfully and keep their subtitles instead of losing them.
-  Failed jobs on the queue page now expose the ffmpeg output that caused the failure.
+  0.5.3.0 - Reliability, safety and performance release.
+  Stops the same episode being queued and transcoded more than once (the duplicate "... (1)" outputs):
+  the enqueue idempotency check is now race-free, and the worker skips a job whose output already exists.
+  Pausing the queue now also pauses the running encode at the OS level and resumes it where it left off,
+  instead of only stopping new jobs. Replace-in-place is now crash-safe across Docker mounts (no more
+  truncated original if the server restarts mid-write), and never overwrites an unrelated file.
+  "copy" video profiles no longer re-transcode forever; compliance and rules now consider every audio
+  track, not just the first. Removing or cancelling a running job now actually stops its ffmpeg.
+  Security hardening: ffprobe/ffmpeg arguments are passed safely (a crafted filename can no longer inject
+  options) and the input is restricted to local-file protocols. Performance: ffprobe results are cached so
+  unchanged files are not re-probed every sweep, and the sweep no longer does work that grows with the
+  square of the library size. Plus queue-durability, verification and queue-page fixes.
