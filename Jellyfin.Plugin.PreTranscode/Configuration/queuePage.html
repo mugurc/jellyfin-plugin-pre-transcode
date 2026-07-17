@@ -47,6 +47,7 @@
     (function () {
         var page = document.querySelector('#PreTranscodeQueuePage');
         var timer = null;
+        var lastSig = null;
 
         function api(method, path) {
             return ApiClient.ajax({ type: method, url: ApiClient.getUrl('PreTranscode/' + path), dataType: method === 'GET' ? 'json' : undefined });
@@ -104,6 +105,22 @@
 
         function renderJobs(jobs) {
             var body = document.getElementById('jobsBody');
+
+            // Skip the rebuild when nothing visible changed, so an open ffmpeg-log panel and any text
+            // selection inside it survive the 2s poll instead of being destroyed and recreated.
+            var sig = JSON.stringify(jobs.map(function (j) {
+                return [j.Id, j.Status, Math.round(j.Progress || 0), j.StatusDetail, j.ErrorMessage, j.LogExcerpt, j.OutputPath];
+            }));
+            if (sig === lastSig) { return; }
+            lastSig = sig;
+
+            // When a rebuild is unavoidable (e.g. another job's progress moved), remember which log
+            // panels were expanded so they can be re-expanded afterwards rather than snapping shut.
+            var open = {};
+            body.querySelectorAll('details[data-log-id]').forEach(function (d) {
+                if (d.open) { open[d.getAttribute('data-log-id')] = true; }
+            });
+
             body.innerHTML = '';
             document.getElementById('empty').style.display = jobs.length ? 'none' : '';
 
@@ -115,7 +132,7 @@
                 var detail = job.StatusDetail ? (' — ' + esc(job.StatusDetail)) : '';
                 var err = job.Status === 'Failed' && job.ErrorMessage ? '<div class="fieldDescription" style="color:#c33;">' + esc(job.ErrorMessage) + '</div>' : '';
                 var log = job.Status === 'Failed' && job.LogExcerpt
-                    ? '<details style="margin-top:0.3em;"><summary class="fieldDescription" style="cursor:pointer;">Show ffmpeg output</summary>'
+                    ? '<details data-log-id="' + esc(job.Id) + '" style="margin-top:0.3em;"><summary class="fieldDescription" style="cursor:pointer;">Show ffmpeg output</summary>'
                         + '<pre style="white-space:pre-wrap;word-break:break-word;font-size:0.85em;max-height:16em;overflow:auto;margin:0.3em 0 0;">'
                         + esc(job.LogExcerpt) + '</pre></details>'
                     : '';
@@ -147,6 +164,10 @@
 
                 body.appendChild(tr);
             });
+
+            body.querySelectorAll('details[data-log-id]').forEach(function (d) {
+                if (open[d.getAttribute('data-log-id')]) { d.open = true; }
+            });
         }
 
         function load() {
@@ -174,7 +195,7 @@
         page.querySelector('#btnClear').addEventListener('click', function () { api('POST', 'Jobs/ClearFinished').then(load); });
         page.querySelector('#btnRefresh').addEventListener('click', load);
 
-        page.addEventListener('pageshow', function () { load(); timer = setInterval(load, 2000); });
+        page.addEventListener('pageshow', function () { if (timer) { clearInterval(timer); } load(); timer = setInterval(load, 2000); });
         page.addEventListener('pagehide', function () { if (timer) { clearInterval(timer); timer = null; } });
     })();
     </script>
