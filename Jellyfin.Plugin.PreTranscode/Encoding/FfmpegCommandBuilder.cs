@@ -21,7 +21,11 @@ internal static class FfmpegCommandBuilder
         string inputPath,
         string outputPath)
     {
-        var args = new List<string> { "-y", "-hide_banner", "-i", inputPath };
+        // Restrict the input to local-file protocols. The source is always a verified local library file,
+        // so this changes nothing for legitimate input, but it makes the "never fetch a remote URL / read
+        // an arbitrary file via concat:/subfile:/http:" property explicit and survivable across refactors
+        // instead of relying solely on the caller's File.Exists gate.
+        var args = new List<string> { "-y", "-hide_banner", "-protocol_whitelist", "file,crypto,data", "-i", inputPath };
 
         var mkvLike = IsMatroska(profile.Container);
 
@@ -275,10 +279,28 @@ internal static class FfmpegCommandBuilder
 
     private static string BuildTonemapChain(string algorithm)
     {
-        var algo = string.IsNullOrWhiteSpace(algorithm) ? "hable" : algorithm.Trim();
+        var algo = SanitizeTonemapAlgorithm(algorithm);
         return "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
             + "tonemap=tonemap=" + algo + ":desat=0,"
             + "zscale=t=bt709:m=bt709:r=tv,format=yuv420p";
+    }
+
+    // The algorithm is embedded verbatim in the filtergraph, so restrict it to bare alphanumerics: a
+    // value like "hable,movie=/etc/passwd[o]" would otherwise inject an arbitrary ffmpeg filter. Every
+    // real tonemap algorithm name (hable, mobius, reinhard, bt2390, …) is lowercase alphanumeric; an
+    // invalid value collapses to a harmless unknown name that ffmpeg rejects cleanly.
+    private static string SanitizeTonemapAlgorithm(string algorithm)
+    {
+        var cleaned = new StringBuilder((algorithm ?? string.Empty).Length);
+        foreach (var c in (algorithm ?? string.Empty).ToLowerInvariant())
+        {
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
+            {
+                cleaned.Append(c);
+            }
+        }
+
+        return cleaned.Length == 0 ? "hable" : cleaned.ToString();
     }
 
     private static int? ChannelCap(EncodingProfile profile)

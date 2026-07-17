@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -37,6 +36,7 @@ internal sealed class FfmpegCapabilitiesService : IFfmpegCapabilitiesService, ID
     private readonly IMediaEncoder _mediaEncoder;
     private readonly ILogger<FfmpegCapabilitiesService> _logger;
     private readonly SemaphoreSlim _probeLock = new(1, 1);
+    private readonly Dictionary<string, EncoderPresetInfo> _presetCache = new(StringComparer.OrdinalIgnoreCase);
 
     private FfmpegCapabilities? _cache;
 
@@ -81,34 +81,57 @@ internal sealed class FfmpegCapabilitiesService : IFfmpegCapabilitiesService, ID
     /// <inheritdoc />
     public async Task<EncoderPresetInfo> GetEncoderPresetsAsync(string encoder, CancellationToken cancellationToken)
     {
-        var info = new EncoderPresetInfo { Encoder = encoder };
-        var path = FfmpegPaths.ResolveFfmpeg(_mediaEncoder);
-
-        if (!string.IsNullOrEmpty(path))
+        // Serve from cache without spawning ffmpeg. Without this each call runs `ffmpeg -h encoder=X`,
+        // and the endpoint is otherwise ungated: a client could fire many requests for distinct encoder
+        // names and spawn an unbounded number of concurrent ffmpeg processes. The shared _probeLock both
+        // deduplicates concurrent probes for the same encoder and bounds total probe concurrency to one.
+        if (_presetCache.TryGetValue(encoder, out var cached))
         {
-            try
-            {
-                var help = await ProcessRunner.RunAsync(
-                    path,
-                    string.Format(CultureInfo.InvariantCulture, "-hide_banner -h encoder={0}", encoder),
-                    ProbeTimeoutMs,
-                    cancellationToken).ConfigureAwait(false);
-                info = FfmpegOutputParser.ParseEncoderPresets(help, encoder);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                _logger.LogWarning(ex, "Failed to probe presets for encoder {Encoder}", encoder);
-            }
+            return cached;
         }
 
-        if (info.Kind == PresetKind.None && KnownPresets.TryGetValue(encoder, out var known))
+        await _probeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            info.Kind = PresetKind.NamedList;
-            info.Values = known;
-            info.FromFfmpeg = false;
-        }
+            if (_presetCache.TryGetValue(encoder, out cached))
+            {
+                return cached;
+            }
 
-        return info;
+            var info = new EncoderPresetInfo { Encoder = encoder };
+            var path = FfmpegPaths.ResolveFfmpeg(_mediaEncoder);
+
+            if (!string.IsNullOrEmpty(path))
+            {
+                try
+                {
+                    var help = await ProcessRunner.RunAsync(
+                        path,
+                        new[] { "-hide_banner", "-h", "encoder=" + encoder },
+                        ProbeTimeoutMs,
+                        cancellationToken).ConfigureAwait(false);
+                    info = FfmpegOutputParser.ParseEncoderPresets(help, encoder);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "Failed to probe presets for encoder {Encoder}", encoder);
+                }
+            }
+
+            if (info.Kind == PresetKind.None && KnownPresets.TryGetValue(encoder, out var known))
+            {
+                info.Kind = PresetKind.NamedList;
+                info.Values = known;
+                info.FromFfmpeg = false;
+            }
+
+            _presetCache[encoder] = info;
+            return info;
+        }
+        finally
+        {
+            _probeLock.Release();
+        }
     }
 
     /// <inheritdoc />

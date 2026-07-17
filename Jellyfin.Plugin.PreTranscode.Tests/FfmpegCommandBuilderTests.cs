@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Jellyfin.Plugin.PreTranscode.Configuration;
 using Jellyfin.Plugin.PreTranscode.Encoding;
 using Jellyfin.Plugin.PreTranscode.Media;
@@ -31,6 +32,31 @@ public class FfmpegCommandBuilderTests
     private static string Build(EncodingProfile p, MediaProbeInfo s)
     {
         return string.Join(" ", FfmpegCommandBuilder.BuildArguments(p, s, Presets, "/in.mkv", "/out.mp4"));
+    }
+
+    [Fact]
+    public void Input_RestrictedToLocalFileProtocols_BeforeInput()
+    {
+        var args = FfmpegCommandBuilder.BuildArguments(BaseProfile(), Source(), Presets, "/in.mkv", "/out.mp4").ToList();
+        var w = args.IndexOf("-protocol_whitelist");
+        var i = args.IndexOf("-i");
+        Assert.True(w >= 0, "the input must carry a protocol whitelist");
+        Assert.Equal("file,crypto,data", args[w + 1]);
+        Assert.True(w < i, "the whitelist must precede -i to apply to that input");
+    }
+
+    [Fact]
+    public void TonemapAlgorithm_IsSanitized_NoFilterInjection()
+    {
+        var p = BaseProfile();
+        p.TonemapHdr = true;
+        p.TonemapAlgorithm = "hable,movie=/etc/passwd[o]";
+        var cmd = Build(p, Source(hdr: true));
+
+        // The malicious value must not survive as an injectable ffmpeg filter.
+        Assert.DoesNotContain("movie=", cmd);
+        Assert.DoesNotContain("/etc/passwd", cmd);
+        Assert.Contains("tonemap=tonemap=hablemovieetcpasswdo:desat=0", cmd);
     }
 
     [Fact]
