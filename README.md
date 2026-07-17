@@ -1,5 +1,11 @@
 # Jellyfin Pre-Transcode
 
+[![Release](https://img.shields.io/github/v/release/mugurc/jellyfin-plugin-pre-transcode?style=flat-square&color=00A4DC&label=release)](https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/mugurc/jellyfin-plugin-pre-transcode/total?style=flat-square&color=00A4DC&label=downloads)](https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases)
+[![Jellyfin](https://img.shields.io/badge/Jellyfin-10.11-00A4DC?style=flat-square&logo=jellyfin&logoColor=white)](https://jellyfin.org)
+[![.NET](https://img.shields.io/badge/.NET-9.0-512BD4?style=flat-square&logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
+[![License](https://img.shields.io/badge/license-GPLv3-blue?style=flat-square)](LICENSE)
+
 A Jellyfin plugin that **proactively pre-transcodes** your library media, in the background,
 **once**, into a format you define as your *compatibility baseline* — so the server does not
 have to live-transcode the same files on **every** playback.
@@ -11,6 +17,17 @@ encoder, container, preset and tone-map dropdowns are populated by probing your 
 > **Status:** feature-complete and validated end-to-end against real ffmpeg on Jellyfin 10.11,
 > but young. Test on a copy of your media first and start with the default **Separate directory**
 > output policy (which never touches your originals).
+
+<!-- SCREENSHOTS — uncomment once docs/queue.png and docs/settings.png exist.
+     Capture from Dashboard → Plugins → Pre-Transcode, browser window ~1400px wide, dark theme.
+
+## Screenshots
+
+| Queue & status | Encoding profile |
+|---|---|
+| ![The queue page: jobs with live progress bars, pause/cancel/requeue controls](docs/queue.png) | ![The settings page: codec and encoder dropdowns populated from ffmpeg](docs/settings.png) |
+
+-->
 
 ## Why?
 
