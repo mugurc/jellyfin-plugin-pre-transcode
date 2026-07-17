@@ -9,6 +9,14 @@
     "imageUrl": "",
     "versions": [
       {
+        "version": "0.5.3.0",
+        "changelog": "Reliability, safety and performance release. Stops the same episode being queued and transcoded more than once (the duplicate \"... (1)\" outputs). Pausing the queue now also pauses the running encode and resumes it where it left off. Replace-in-place is crash-safe across Docker mounts and never overwrites an unrelated file. \"copy\" video profiles no longer re-transcode forever; compliance and rules now consider every audio track, not just the first. Removing or cancelling a running job now actually stops its ffmpeg. Security hardening for ffprobe/ffmpeg arguments and input protocols. Performance: ffprobe results are cached so unchanged files are not re-probed every sweep, and the sweep no longer scales with the square of the library size.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases/download/v0.5.3.0/pre-transcode-0.5.3.0.zip",
+        "checksum": "0709c02fc2824748a86cdd949c9a0dcb",
+        "timestamp": "2026-07-17T12:14:38Z"
+      },
+      {
         "version": "0.5.2.0",
         "changelog": "Fixes mp4 sources failing within seconds of starting whenever the output container is Matroska. Subtitles in an mp4 are mov_text, which Matroska cannot store, so copying them made the muxer reject the output header and abort the whole transcode (ffmpeg exit code 218, \"Function not implemented\"). Subtitle tracks are now handled individually: those the output container can store are copied verbatim, and the rest are converted to a text format it can (srt, or WebVTT for webm). mp4 sources therefore transcode successfully and keep their subtitles instead of losing them. Failed jobs on the queue page now expose the ffmpeg output that caused the failure.",
         "targetAbi": "10.11.0.0",
