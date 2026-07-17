@@ -72,6 +72,8 @@ public sealed class ItemEvaluator
             var items = _libraryManager.GetItemList(new InternalItemsQuery
             {
                 MediaTypes = new[] { MediaType.Video },
+                SourceTypes = new[] { SourceType.Library },
+                IsFolder = false,
                 Recursive = true,
                 IsVirtualItem = false
             });
