@@ -103,14 +103,14 @@
             return b;
         }
 
-        function renderJobs(jobs) {
+        function renderJobs(jobs, paused) {
             var body = document.getElementById('jobsBody');
 
             // Skip the rebuild when nothing visible changed, so an open ffmpeg-log panel and any text
             // selection inside it survive the 2s poll instead of being destroyed and recreated.
-            var sig = JSON.stringify(jobs.map(function (j) {
+            var sig = JSON.stringify([paused ? 1 : 0, jobs.map(function (j) {
                 return [j.Id, j.Status, Math.round(j.Progress || 0), j.StatusDetail, j.ErrorMessage, j.LogExcerpt, j.OutputPath];
-            }));
+            })]);
             if (sig === lastSig) { return; }
             lastSig = sig;
 
@@ -142,8 +142,10 @@
                 var pct = Math.round(job.Progress || 0);
                 var bar = '';
                 if (job.Status === 'Processing') {
+                    var barColor = paused ? '#888' : '#00a4dc';
+                    var pctLabel = paused ? (pct + '% · paused') : (pct + '%');
                     bar = '<div style="background:rgba(128,128,128,.25);border-radius:4px;overflow:hidden;height:1.1em;">'
-                        + '<div style="background:#00a4dc;height:100%;width:' + pct + '%;"></div></div><div class="fieldDescription">' + pct + '%</div>';
+                        + '<div style="background:' + barColor + ';height:100%;width:' + pct + '%;"></div></div><div class="fieldDescription">' + pctLabel + '</div>';
                 } else if (job.Status === 'Completed') {
                     bar = '<span class="fieldDescription">→ ' + esc(job.OutputPath) + '</span>';
                 }
@@ -174,7 +176,7 @@
             return Promise.all([api('GET', 'Jobs'), api('GET', 'Queue/Status')]).then(function (res) {
                 var jobs = res[0] || [];
                 var st = res[1] || {};
-                renderJobs(jobs);
+                renderJobs(jobs, st.IsPaused);
                 document.getElementById('summary').textContent =
                     (st.IsPaused ? '⏸ PAUSED — ' : '') +
                     'Pending: ' + (st.Pending || 0) + ' · Processing: ' + (st.Processing || 0) +

@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -44,7 +45,7 @@ internal sealed class TranscodeExecutor
         _logger = logger;
     }
 
-    public async Task ExecuteAsync(TranscodeJob job, CancellationToken cancellationToken)
+    public async Task ExecuteAsync(TranscodeJob job, CancellationToken cancellationToken, Action<Process>? onProcessStarted = null)
     {
         var tempFile = string.Empty;
         try
@@ -130,7 +131,8 @@ internal sealed class TranscodeExecutor
                     // (a Processing job is reset to Pending on load).
                     job.Progress = percent;
                 },
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                onProcessStarted).ConfigureAwait(false);
 
             if (exitCode != 0)
             {

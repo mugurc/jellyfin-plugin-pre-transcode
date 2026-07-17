@@ -19,7 +19,8 @@ internal static class FfmpegExecutor
         IReadOnlyList<string> arguments,
         double totalDurationSeconds,
         Action<double>? onProgress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<Process>? onProcessStarted = null)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -76,6 +77,9 @@ internal static class FfmpegExecutor
         {
             throw new InvalidOperationException("Failed to start ffmpeg.");
         }
+
+        // Hand the live process to the caller so it can suspend/resume it (pause) or otherwise track it.
+        onProcessStarted?.Invoke(process);
 
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();

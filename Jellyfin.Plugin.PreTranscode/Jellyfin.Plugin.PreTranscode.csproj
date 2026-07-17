@@ -7,6 +7,9 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Nullable>enable</Nullable>
+    <!-- Required by the [LibraryImport] source generator (used for the Windows suspend/resume P/Invoke).
+         No hand-written unsafe code exists; this only permits the generated marshalling stubs. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AnalysisMode>AllEnabledByDefault</AnalysisMode>
     <CodeAnalysisRuleSet>../jellyfin.ruleset</CodeAnalysisRuleSet>
   </PropertyGroup>

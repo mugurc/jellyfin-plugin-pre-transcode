@@ -12,4 +12,15 @@ public interface IQueueController
     /// <param name="id">The job id.</param>
     /// <returns><c>true</c> if the job existed.</returns>
     bool CancelJob(string id);
+
+    /// <summary>
+    /// Pauses the queue: stops new jobs from being claimed and suspends any running encode at the OS
+    /// level, freeing CPU without losing progress.
+    /// </summary>
+    void Pause();
+
+    /// <summary>
+    /// Resumes the queue: continues any suspended encode where it left off and lets new jobs be claimed.
+    /// </summary>
+    void Resume();
 }

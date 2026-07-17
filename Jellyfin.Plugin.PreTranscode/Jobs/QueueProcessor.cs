@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.PreTranscode.Ffmpeg;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -17,6 +19,7 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
     private readonly TranscodeExecutor _executor;
     private readonly ILogger<QueueProcessor> _logger;
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _active = new();
+    private readonly ConcurrentDictionary<string, Process> _activeProcesses = new();
 
     private CancellationTokenSource? _stopCts;
     private Task? _loop;
@@ -66,13 +69,44 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
     {
         if (_active.TryGetValue(id, out var cts))
         {
+            try
+            {
 #pragma warning disable CA1849 // synchronous Cancel is intentional: CancelJob is a synchronous API
-            cts.Cancel();
+                cts.Cancel();
 #pragma warning restore CA1849
+            }
+            catch (ObjectDisposedException)
+            {
+                // The job finished and its CTS was disposed between the lookup and the cancel; it is
+                // already effectively cancelled. Never let this escape — CancelAll iterates jobs and
+                // one racing completion must not abort cancelling the rest.
+            }
+
             return true;
         }
 
         return _queue.Cancel(id);
+    }
+
+    public void Pause()
+    {
+        // Stop claiming new jobs first, then freeze whatever is already running.
+        _queue.IsPaused = true;
+        foreach (var process in _activeProcesses.Values)
+        {
+            ProcessSuspender.Suspend(process);
+        }
+    }
+
+    public void Resume()
+    {
+        // Unfreeze running encodes before allowing new ones to be claimed.
+        foreach (var process in _activeProcesses.Values)
+        {
+            ProcessSuspender.Resume(process);
+        }
+
+        _queue.IsPaused = false;
     }
 
     public void Dispose()
@@ -143,7 +177,21 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
             {
                 try
                 {
-                    await _executor.ExecuteAsync(job, jobCts.Token).ConfigureAwait(false);
+                    await _executor.ExecuteAsync(
+                        job,
+                        jobCts.Token,
+                        process =>
+                        {
+                            _activeProcesses[job.Id] = process;
+
+                            // Close the race where the queue was paused between claiming this job and the
+                            // encode actually starting: suspend the fresh process immediately if we are
+                            // already paused, so nothing slips through and runs unpaused.
+                            if (_queue.IsPaused)
+                            {
+                                ProcessSuspender.Suspend(process);
+                            }
+                        }).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -152,6 +200,7 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
                 finally
                 {
                     Interlocked.Decrement(ref _inFlight);
+                    _activeProcesses.TryRemove(job.Id, out _);
                     if (_active.TryRemove(job.Id, out var removed))
                     {
                         removed.Dispose();

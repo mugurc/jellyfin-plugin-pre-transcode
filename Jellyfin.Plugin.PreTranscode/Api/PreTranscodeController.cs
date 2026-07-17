@@ -225,6 +225,10 @@ public class PreTranscodeController : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public ActionResult RemoveJob([FromRoute][Required] string id)
     {
+        // Cancel first so a running encode is actually stopped. Removing the record alone would leave the
+        // ffmpeg process running (orphaned) and, because the source no longer has a queued job, let a
+        // later sweep re-enqueue and re-transcode the same file into a duplicate output.
+        _queueController.CancelJob(id);
         return _queue.Remove(id) ? NoContent() : NotFound();
     }
 
@@ -248,7 +252,7 @@ public class PreTranscodeController : ControllerBase
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     public ActionResult PauseQueue()
     {
-        _queue.IsPaused = true;
+        _queueController.Pause();
         return NoContent();
     }
 
@@ -260,7 +264,7 @@ public class PreTranscodeController : ControllerBase
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     public ActionResult ResumeQueue()
     {
-        _queue.IsPaused = false;
+        _queueController.Resume();
         return NoContent();
     }
 }
