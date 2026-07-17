@@ -91,7 +91,11 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
             try
             {
                 var config = Plugin.Instance?.Configuration;
-                var maxConcurrency = Math.Max(1, config?.MaxConcurrentJobs ?? 1);
+
+                // Clamp both ends: the config value is a raw int with only a client-side max, so a
+                // hand-edited or API-set MaxConcurrentJobs could otherwise spawn an unbounded number of
+                // ffmpeg processes and exhaust the host.
+                var maxConcurrency = Math.Clamp(config?.MaxConcurrentJobs ?? 1, 1, 32);
                 var enabled = config?.Enabled == true && !_queue.IsPaused;
 
                 if (!enabled || Volatile.Read(ref _inFlight) >= maxConcurrency)

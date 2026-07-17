@@ -207,8 +207,31 @@ internal sealed class JobQueue : IJobQueue
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to load job queue; starting empty");
+            // Preserve the unreadable file instead of letting the next Save() overwrite it with an empty
+            // queue — a corrupt file is recoverable by hand, a silently-truncated one is not.
+            _logger.LogError(ex, "Failed to load job queue; starting empty and preserving the existing file");
             _jobs.Clear();
+            TryPreserveCorruptFile();
+        }
+    }
+
+    private void TryPreserveCorruptFile()
+    {
+        try
+        {
+            // Keep the FIRST corrupt copy for forensics; a later corruption must not overwrite it
+            // (overwrite: true would discard the very evidence this preserves).
+            var corruptPath = _filePath + ".corrupt";
+            if (File.Exists(_filePath) && !File.Exists(corruptPath))
+            {
+                File.Move(_filePath, corruptPath);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 
@@ -216,8 +239,14 @@ internal sealed class JobQueue : IJobQueue
     {
         try
         {
+            // Write to a temp file and atomically rename over the target. File.WriteAllText truncates in
+            // place first, so a crash mid-write would leave a half-written file that fails to parse on the
+            // next start (and would then be discarded). The temp file lives in the same directory as the
+            // target, so the rename is a same-volume atomic operation.
             var json = JsonSerializer.Serialize(_jobs, JsonOptions);
-            File.WriteAllText(_filePath, json);
+            var tempPath = _filePath + ".tmp";
+            File.WriteAllText(tempPath, json);
+            File.Move(tempPath, _filePath, overwrite: true);
         }
         catch (Exception ex)
         {

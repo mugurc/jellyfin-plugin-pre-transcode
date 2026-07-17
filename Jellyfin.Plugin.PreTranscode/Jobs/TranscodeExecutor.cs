@@ -96,19 +96,17 @@ internal sealed class TranscodeExecutor
 
             SetDetail(job, "transcoding");
 
-            var lastSaved = -10d;
             var (exitCode, stdErrTail) = await FfmpegExecutor.RunAsync(
                 FfmpegPaths.ResolveFfmpeg(_mediaEncoder),
                 arguments,
                 probe.DurationSeconds,
                 percent =>
                 {
+                    // Update progress in memory only. The queue hands out live job references, so the UI
+                    // still sees the current percent on its next poll; persisting it would rewrite the
+                    // whole queue file ~50x per transcode for a value that is discarded on restart anyway
+                    // (a Processing job is reset to Pending on load).
                     job.Progress = percent;
-                    if (percent - lastSaved >= 2d)
-                    {
-                        lastSaved = percent;
-                        _queue.Update(job);
-                    }
                 },
                 cancellationToken).ConfigureAwait(false);
 
