@@ -53,7 +53,7 @@ internal sealed class JobQueue : IJobQueue
         }
     }
 
-    public bool Enqueue(TranscodeJob job)
+    public bool Enqueue(TranscodeJob job, Func<IReadOnlyList<TranscodeJob>, bool>? isRedundant = null)
     {
         lock (_sync)
         {
@@ -62,6 +62,14 @@ internal sealed class JobQueue : IJobQueue
                 && (j.Status == JobStatus.Pending || j.Status == JobStatus.Processing));
 
             if (duplicate)
+            {
+                return false;
+            }
+
+            // Final redundancy check, atomic with the add: an earlier job for this source may have
+            // completed (and produced its output) while the caller was probing, which the caller's
+            // pre-probe checks could not have seen.
+            if (isRedundant is not null && isRedundant(_jobs))
             {
                 return false;
             }
@@ -140,6 +148,15 @@ internal sealed class JobQueue : IJobQueue
         {
             var job = _jobs.FirstOrDefault(j => string.Equals(j.Id, id, StringComparison.Ordinal));
             if (job is null)
+            {
+                return false;
+            }
+
+            // Never re-queue a job that is still running: flipping a Processing job back to Pending
+            // leaves the executor running while the loop re-claims the same job, producing a second run
+            // on the same temp path (corruption at concurrency >= 2, a wasted re-encode at 1). Cancel it
+            // first if you want to restart it.
+            if (job.Status == JobStatus.Processing)
             {
                 return false;
             }

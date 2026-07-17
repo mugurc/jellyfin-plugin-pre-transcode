@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace Jellyfin.Plugin.PreTranscode.Jobs;
@@ -26,11 +27,16 @@ public interface IJobQueue
     TranscodeJob? Get(string id);
 
     /// <summary>
-    /// Adds a job unless an active (pending/processing) job already exists for the same source path.
+    /// Adds a job unless an active (pending/processing) job already exists for the same source path, or
+    /// the optional <paramref name="isRedundant"/> predicate — evaluated atomically under the same lock,
+    /// with the current job list — reports the work is no longer needed. The predicate closes the gap
+    /// where a source is re-evaluated while an earlier job for it completes: the caller's own pre-checks
+    /// run before an <c>await</c>, so only a check performed together with the add is race-free.
     /// </summary>
     /// <param name="job">The job to add.</param>
-    /// <returns><c>true</c> if enqueued; <c>false</c> if a duplicate was skipped.</returns>
-    bool Enqueue(TranscodeJob job);
+    /// <param name="isRedundant">Optional final redundancy check, run under the lock with the live job list.</param>
+    /// <returns><c>true</c> if enqueued; <c>false</c> if a duplicate/redundant job was skipped.</returns>
+    bool Enqueue(TranscodeJob job, Func<IReadOnlyList<TranscodeJob>, bool>? isRedundant = null);
 
     /// <summary>
     /// Persists changes to an existing job.

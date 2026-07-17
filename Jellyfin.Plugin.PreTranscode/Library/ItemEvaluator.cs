@@ -161,7 +161,13 @@ public sealed class ItemEvaluator
             CreatedUtc = DateTime.UtcNow
         };
 
-        var added = _queue.Enqueue(job);
+        // Re-run the idempotency checks atomically with the add. The checks above ran before the ffprobe
+        // await, so between them and here an earlier job for this same source can have completed and
+        // written its output; without this a second (duplicate) job would be enqueued and later
+        // re-transcoded into a "... (1)" file. Evaluated under the queue lock, with the live job list.
+        var added = _queue.Enqueue(job, jobs =>
+            OutputAlreadyExists(profile, path)
+            || AlreadyHandled(jobs, path, profile.Id, File.Exists, MaxAutoFailedAttempts));
         if (added)
         {
             _logger.LogInformation("Queued {Path} using profile {Profile}", path, profile.Name);
