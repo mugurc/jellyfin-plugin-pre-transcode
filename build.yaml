@@ -1,7 +1,7 @@
 ---
 name: "Pre-Transcode"
 guid: "8da245f6-7244-449b-9f32-46043f34b5f0"
-version: "0.5.3.0"
+version: "0.5.4.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "Pre-transcode media to an admin-defined compatibility baseline."
@@ -16,15 +16,12 @@ owner: "mugurc"
 artifacts:
 - "Jellyfin.Plugin.PreTranscode.dll"
 changelog: >
-  0.5.3.0 - Reliability, safety and performance release.
-  Stops the same episode being queued and transcoded more than once (the duplicate "... (1)" outputs):
-  the enqueue idempotency check is now race-free, and the worker skips a job whose output already exists.
-  Pausing the queue now also pauses the running encode at the OS level and resumes it where it left off,
-  instead of only stopping new jobs. Replace-in-place is now crash-safe across Docker mounts (no more
-  truncated original if the server restarts mid-write), and never overwrites an unrelated file.
-  "copy" video profiles no longer re-transcode forever; compliance and rules now consider every audio
-  track, not just the first. Removing or cancelling a running job now actually stops its ffmpeg.
-  Security hardening: ffprobe/ffmpeg arguments are passed safely (a crafted filename can no longer inject
-  options) and the input is restricted to local-file protocols. Performance: ffprobe results are cached so
-  unchanged files are not re-probed every sweep, and the sweep no longer does work that grows with the
-  square of the library size. Plus queue-durability, verification and queue-page fixes.
+  0.5.4.0 - Fixes TV episodes appearing twice in Jellyfin when using the "add as alternate version" output
+  mode. The transcode is registered as an alternate version of the source through a Jellyfin database link,
+  but the plugin fired one merge per completed episode and forced a full library scan each time; those
+  scans re-indexed the freshly-written file concurrently with the merge, and with no locking it was
+  last-writer-wins, so some episodes collapsed into one entry and others were left as a visible duplicate.
+  Merges are now serialized and no longer force a library scan (Jellyfin already re-indexes an added file
+  on its own), and the link is applied to the canonical item. Note: Jellyfin's filename-based version
+  grouping is movies-only, so TV alternate versions rely entirely on this link; if your setup still shows
+  a duplicate, merge the two entries once from the dashboard, or use the "replace in place" output mode.
