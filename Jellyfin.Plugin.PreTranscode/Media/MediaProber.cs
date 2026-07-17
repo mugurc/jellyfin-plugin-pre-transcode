@@ -27,11 +27,10 @@ internal sealed class MediaProber : IMediaProber
     public async Task<MediaProbeInfo?> ProbeAsync(string path, CancellationToken cancellationToken)
     {
         var probePath = FfmpegPaths.ResolveFfprobe(_mediaEncoder);
-        var arguments = "-v quiet -print_format json -show_format -show_streams \"" + path + "\"";
         string json;
         try
         {
-            json = await ProcessRunner.RunAsync(probePath, arguments, 60000, cancellationToken).ConfigureAwait(false);
+            json = await ProcessRunner.RunAsync(probePath, BuildProbeArguments(path), 60000, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -50,7 +49,23 @@ internal sealed class MediaProber : IMediaProber
         }
     }
 
-    private static MediaProbeInfo Parse(string json, string path)
+    // The path is passed as its own argv element so a filename containing quotes, spaces or a leading
+    // dash cannot inject extra ffprobe options (e.g. a file literally named `x" -o "/etc/y` writing to
+    // an attacker-chosen path). Do not fold this back into a single command string.
+    internal static IReadOnlyList<string> BuildProbeArguments(string path)
+    {
+        return new[]
+        {
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            "-show_streams",
+            "-protocol_whitelist", "file,crypto,data",
+            path
+        };
+    }
+
+    internal static MediaProbeInfo Parse(string json, string path)
     {
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -66,6 +81,7 @@ internal sealed class MediaProber : IMediaProber
         var overallBitrate = root.TryGetProperty("format", out var fmt) ? GetDouble(fmt, "bit_rate") : 0;
 
         var videoFound = false;
+        double videoStreamBitrate = 0;
         var audioStreams = new List<AudioStreamInfo>();
         var subtitleStreams = new List<SubtitleStreamInfo>();
         if (root.TryGetProperty("streams", out var streams) && streams.ValueKind == JsonValueKind.Array)
@@ -80,8 +96,7 @@ internal sealed class MediaProber : IMediaProber
                     info.Width = (int)GetDouble(stream, "width");
                     info.Height = (int)GetDouble(stream, "height");
                     info.PixelFormat = GetString(stream, "pix_fmt");
-                    var vbr = GetDouble(stream, "bit_rate");
-                    info.VideoBitrateKbps = (int)((vbr > 0 ? vbr : overallBitrate) / 1000d);
+                    videoStreamBitrate = GetDouble(stream, "bit_rate");
                     info.VideoFramerate = ParseRate(GetString(stream, "r_frame_rate"));
                     info.IsHdr = DetectHdr(stream);
                     info.IsDolbyVision = DetectDolbyVision(stream);
@@ -106,6 +121,14 @@ internal sealed class MediaProber : IMediaProber
                 }
             }
         }
+
+        // Prefer the video stream's own bit_rate. Matroska stores no per-stream bitrate, so ffprobe
+        // omits it for mkv; falling back to the format-level total there would wrongly add the audio
+        // and subtitle bitrate to the video figure. Only trust the total when the video stream is the
+        // sole stream; otherwise report unknown (0) rather than an inflated value.
+        info.VideoBitrateKbps = (int)((videoStreamBitrate > 0
+            ? videoStreamBitrate
+            : (audioStreams.Count == 0 && subtitleStreams.Count == 0 ? overallBitrate : 0)) / 1000d);
 
         info.AudioStreams = audioStreams;
         info.SubtitleStreams = subtitleStreams;

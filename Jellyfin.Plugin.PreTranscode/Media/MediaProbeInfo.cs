@@ -45,7 +45,8 @@ public class MediaProbeInfo
     public int Height { get; set; }
 
     /// <summary>
-    /// Gets or sets the video bitrate in kbps (or overall bitrate when a per-stream value is unavailable).
+    /// Gets or sets the video bitrate in kbps (0 when unknown — e.g. Matroska stores no per-stream
+    /// bitrate, and the format-level total is not attributed to video when other streams are present).
     /// </summary>
     public int VideoBitrateKbps { get; set; }
 
