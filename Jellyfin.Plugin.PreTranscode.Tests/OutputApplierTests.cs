@@ -171,26 +171,91 @@ public class OutputApplierTests
     [Fact]
     public void ExpectedOutputPath_AlternateVersion_MatchesActualNaming()
     {
-        var src = Path.Combine("/movies", "movie.mkv");
+        var movies = Path.Combine(Path.GetTempPath(), "movies");
+        var src = Path.Combine(movies, "movie.mkv");
         var expected = OutputApplier.ExpectedOutputPath(Profile(OutputHandlingMode.AddAsAlternateVersion, "mkv", label: "H.264 1080p"), src);
-        Assert.Equal(Path.Combine("/movies", "movie - H.264 1080p.mkv"), expected);
+        Assert.Equal(Path.Combine(movies, "movie - H.264 1080p.mkv"), expected);
     }
 
     [Fact]
     public void ExpectedOutputPath_SeparateDirectory_UsesConfiguredDirOrSourceDir()
     {
-        var src = Path.Combine("/movies", "movie.mkv");
-        Assert.Equal(Path.Combine("/out", "movie.mp4"),
-            OutputApplier.ExpectedOutputPath(Profile(OutputHandlingMode.SeparateDirectory, "mp4", "/out"), src));
-        Assert.Equal(Path.Combine("/movies", "movie.mp4"),
+        var movies = Path.Combine(Path.GetTempPath(), "movies");
+        var outDir = Path.Combine(Path.GetTempPath(), "out");
+        var src = Path.Combine(movies, "movie.mkv");
+        Assert.Equal(Path.Combine(outDir, "movie.mp4"),
+            OutputApplier.ExpectedOutputPath(Profile(OutputHandlingMode.SeparateDirectory, "mp4", outDir), src));
+        Assert.Equal(Path.Combine(movies, "movie.mp4"),
             OutputApplier.ExpectedOutputPath(Profile(OutputHandlingMode.SeparateDirectory, "mp4", string.Empty), src));
     }
 
     [Fact]
     public void ExpectedOutputPath_ReplaceInPlace_IsNull()
     {
-        var src = Path.Combine("/movies", "movie.mkv");
+        var src = Path.Combine(Path.GetTempPath(), "movies", "movie.mkv");
         Assert.Null(OutputApplier.ExpectedOutputPath(Profile(OutputHandlingMode.ReplaceInPlace, "mp4"), src));
+    }
+
+    [Fact]
+    public void ContainerExtension_SanitizesPathTraversalAttempt()
+    {
+        var ext = OutputApplier.ContainerExtension("mp4/../../etc");
+        Assert.DoesNotContain("/", ext);
+        Assert.DoesNotContain("..", ext);
+        Assert.DoesNotContain("\\", ext);
+        Assert.Equal(".mp4etc", ext);
+    }
+
+    [Fact]
+    public void ReplaceInPlace_DoesNotClobberUnrelatedExistingFile()
+    {
+        var work = NewWorkDir();
+        try
+        {
+            // movie.mkv is being replaced with an mp4, but an unrelated movie.mp4 already sits beside it.
+            var source = Path.Combine(work, "movie.mkv");
+            var bystander = Path.Combine(work, "movie.mp4");
+            var temp = Path.Combine(work, "tmp.mp4");
+            File.WriteAllText(source, "original");
+            File.WriteAllText(bystander, "keep me");
+            File.WriteAllText(temp, "encoded");
+
+            var final = OutputApplier.Apply(Profile(OutputHandlingMode.ReplaceInPlace, "mp4"), source, temp);
+
+            Assert.True(File.Exists(bystander), "an unrelated existing file must never be destroyed");
+            Assert.Equal("keep me", File.ReadAllText(bystander));
+            Assert.NotEqual(bystander, final);
+            Assert.Equal("encoded", File.ReadAllText(final));
+            Assert.False(File.Exists(source), "the source itself is still replaced (removed)");
+        }
+        finally
+        {
+            Directory.Delete(work, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ReplaceInPlace_LeavesNoScratchFileBehind()
+    {
+        var work = NewWorkDir();
+        try
+        {
+            var source = Path.Combine(work, "movie.mkv");
+            var temp = Path.Combine(work, "tmp.mkv");
+            File.WriteAllText(source, "original");
+            File.WriteAllText(temp, "encoded");
+
+            OutputApplier.Apply(Profile(OutputHandlingMode.ReplaceInPlace, "mkv"), source, temp);
+
+            Assert.DoesNotContain(
+                Directory.GetFiles(work),
+                f => Path.GetFileName(f).StartsWith(".pretranscode-tmp", System.StringComparison.Ordinal));
+            Assert.Equal("encoded", File.ReadAllText(source));
+        }
+        finally
+        {
+            Directory.Delete(work, recursive: true);
+        }
     }
 
     [Fact]

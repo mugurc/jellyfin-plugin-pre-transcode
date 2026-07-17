@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 using Jellyfin.Plugin.PreTranscode.Configuration;
 
 namespace Jellyfin.Plugin.PreTranscode.Encoding;
@@ -40,8 +41,25 @@ internal static class OutputApplier
             "webm" => ".webm",
             "mov" => ".mov",
             "" => ".mp4",
-            _ => "." + container
+            _ => "." + SanitizeContainerToken(container)
         };
+    }
+
+    // A container value ultimately becomes part of a file path, so strip it to bare alphanumerics: an
+    // admin-set (or migrated) value like "mp4/../../etc" must not be able to traverse out of the target
+    // directory. Falls back to mp4 if nothing usable remains.
+    private static string SanitizeContainerToken(string container)
+    {
+        var cleaned = new StringBuilder(container.Length);
+        foreach (var c in container.ToLowerInvariant())
+        {
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
+            {
+                cleaned.Append(c);
+            }
+        }
+
+        return cleaned.Length == 0 ? "mp4" : cleaned.ToString();
     }
 
     /// <summary>
@@ -74,7 +92,39 @@ internal static class OutputApplier
         var stem = Path.GetFileNameWithoutExtension(sourcePath);
         var finalPath = Path.Combine(directory, stem + extension);
 
-        File.Move(tempOutputPath, finalPath, overwrite: true);
+        var sameAsSource = string.Equals(finalPath, sourcePath, StringComparison.OrdinalIgnoreCase);
+
+        // Never destroy a pre-existing *different* file. When the container changes (e.g. movie.mkv ->
+        // movie.mp4) an unrelated movie.mp4 may already sit next to the source; only the source itself
+        // may be replaced, so anything else is given a unique name instead of being overwritten.
+        if (!sameAsSource && File.Exists(finalPath))
+        {
+            finalPath = MakeUnique(finalPath);
+        }
+
+        // Bring the finished output onto the source's own volume under a scratch name first. When the
+        // temp dir and the media live on different mounts (the norm under Docker) File.Move is a
+        // non-atomic copy+delete; performing that copy to a throwaway name means a crash partway through
+        // leaves the original completely untouched. Only once the copy has fully succeeded is the result
+        // swapped into place with a same-volume (atomic) rename, and only then is the source removed —
+        // so there is never a window where the original is gone and the replacement is incomplete.
+        // Leading-dot hidden name (matches Jellyfin's "**/.*" ignore glob, so the scratch is never
+        // indexed) with a stable prefix. The source's stem is deliberately NOT reused, to keep the name
+        // short — re-embedding a long title could push the scratch path past the Windows MAX_PATH limit
+        // even when the final path is legal.
+        var scratchPath = Path.Combine(
+            directory,
+            ".pretranscode-tmp-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture) + extension);
+        try
+        {
+            File.Move(tempOutputPath, scratchPath);
+            File.Move(scratchPath, finalPath, overwrite: true);
+        }
+        catch
+        {
+            TryDelete(scratchPath);
+            throw;
+        }
 
         if (!string.Equals(finalPath, sourcePath, StringComparison.OrdinalIgnoreCase) && File.Exists(sourcePath))
         {
@@ -82,6 +132,23 @@ internal static class OutputApplier
         }
 
         return finalPath;
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     // Names the output "<original> - <label>.<ext>". That " - <label>" suffix is Jellyfin's native

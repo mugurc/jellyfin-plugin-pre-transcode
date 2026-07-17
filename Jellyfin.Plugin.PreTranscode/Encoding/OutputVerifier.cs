@@ -36,12 +36,23 @@ internal static class OutputVerifier
 
         if (expectedDurationSeconds > 0)
         {
-            var tolerance = Math.Max(2.0, expectedDurationSeconds * 0.02);
+            // A percentage tolerance alone grows without bound on long files (2% of a 2-hour film is
+            // 144s), so a badly truncated encode would still pass. Cap the absolute tolerance so a
+            // grossly missing chunk is always caught. The cap is 60s rather than something tighter
+            // because imprecise-duration containers (MPEG-TS/.ts recordings, some DVD rips) legitimately
+            // report a header duration tens of seconds off from the true, accurately-measured output.
+            var tolerance = Math.Min(Math.Max(2.0, expectedDurationSeconds * 0.02), 60.0);
             if (Math.Abs(probe.DurationSeconds - expectedDurationSeconds) > tolerance)
             {
                 return (false, FormattableString.Invariant(
                     $"duration mismatch: expected ~{expectedDurationSeconds:F1}s, got {probe.DurationSeconds:F1}s"));
             }
+        }
+        else if (probe.DurationSeconds <= 0)
+        {
+            // The source duration was unknown, so no comparison was possible; still refuse an output that
+            // itself reports no duration, which is the signature of an encode that produced only a header.
+            return (false, "output has no readable duration");
         }
 
         return (true, string.Empty);
