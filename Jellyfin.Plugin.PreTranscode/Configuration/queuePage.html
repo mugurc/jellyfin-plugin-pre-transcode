@@ -114,7 +114,12 @@
                 var name = job.DisplayName || job.SourcePath;
                 var detail = job.StatusDetail ? (' — ' + esc(job.StatusDetail)) : '';
                 var err = job.Status === 'Failed' && job.ErrorMessage ? '<div class="fieldDescription" style="color:#c33;">' + esc(job.ErrorMessage) + '</div>' : '';
-                var itemCell = '<td style="padding:0.4em;"><div>' + esc(name) + '</div><div class="fieldDescription">' + esc(job.SourcePath) + '</div>' + err + '</td>';
+                var log = job.Status === 'Failed' && job.LogExcerpt
+                    ? '<details style="margin-top:0.3em;"><summary class="fieldDescription" style="cursor:pointer;">Show ffmpeg output</summary>'
+                        + '<pre style="white-space:pre-wrap;word-break:break-word;font-size:0.85em;max-height:16em;overflow:auto;margin:0.3em 0 0;">'
+                        + esc(job.LogExcerpt) + '</pre></details>'
+                    : '';
+                var itemCell = '<td style="padding:0.4em;"><div>' + esc(name) + '</div><div class="fieldDescription">' + esc(job.SourcePath) + '</div>' + err + log + '</td>';
                 var statusCell = '<td style="padding:0.4em;">' + esc(job.Status) + detail + '</td>';
 
                 var pct = Math.round(job.Progress || 0);

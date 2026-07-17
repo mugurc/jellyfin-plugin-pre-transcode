@@ -179,7 +179,12 @@ To produce an installable, checksummed zip (and the catalog manifest entry), run
 - [x] Reliable automatic queueing of new items: files still being copied/downloaded are deferred and
   re-checked until they settle rather than skipped until the next sweep; config no longer duplicates
   presets/rules across restarts.
-- [ ] Future — MP4 `mov_text` subtitle conversion / external subtitle extraction, distributed/off-box encoding.
+- [x] Idempotent sweeps: a source whose expected output already exists on disk is never re-transcoded,
+  and one that keeps failing is no longer auto-retried indefinitely.
+- [x] Per-container subtitle negotiation: tracks the output container can store are copied verbatim,
+  the rest converted (an mp4 source's `mov_text` → srt), so mp4 sources transcode to Matroska
+  successfully and keep their subtitles.
+- [ ] Future — external subtitle extraction, distributed/off-box encoding.
 
 ## License
 

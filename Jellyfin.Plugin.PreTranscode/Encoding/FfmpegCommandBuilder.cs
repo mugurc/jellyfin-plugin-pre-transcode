@@ -116,8 +116,7 @@ internal static class FfmpegCommandBuilder
         // ---- subtitles ----
         if (mkvLike)
         {
-            args.Add("-c:s");
-            args.Add("copy");
+            AddSubtitles(args, profile.Container, source);
         }
 
         AddRaw(args, profile.ExtraOutputArgs);
@@ -184,6 +183,42 @@ internal static class FfmpegCommandBuilder
                 args.Add(N(cap.Value));
             }
         }
+    }
+
+    // A Matroska output cannot hold every subtitle codec. An mp4 source's mov_text tracks in particular
+    // make the muxer reject the header outright, which kills the whole transcode seconds in, so a track
+    // the container cannot store is converted to a text format it can rather than copied.
+    private static void AddSubtitles(List<string> args, string container, MediaProbeInfo source)
+    {
+        if (source.SubtitleStreams.Count == 0)
+        {
+            // No per-stream info from the probe: nothing is mapped in practice, and copy stays correct.
+            args.Add("-c:s");
+            args.Add("copy");
+            return;
+        }
+
+        var textCodec = IsWebm(container) ? "webvtt" : "srt";
+        for (var i = 0; i < source.SubtitleStreams.Count; i++)
+        {
+            args.Add("-c:s:" + N(i));
+            args.Add(CanStoreSubtitle(container, source.SubtitleStreams[i].Codec) ? "copy" : textCodec);
+        }
+    }
+
+    private static bool CanStoreSubtitle(string container, string codec)
+    {
+        if (IsWebm(container))
+        {
+            return Same(codec, "webvtt");
+        }
+
+        return codec.ToLowerInvariant() switch
+        {
+            "subrip" or "srt" or "text" or "ass" or "ssa" or "webvtt" => true,
+            "hdmv_pgs_subtitle" or "dvd_subtitle" or "dvb_subtitle" or "hdmv_text_subtitle" => true,
+            _ => false
+        };
     }
 
     private static void AddQuality(List<string> args, EncodingProfile profile)
@@ -271,6 +306,11 @@ internal static class FfmpegCommandBuilder
     {
         var c = container.ToLowerInvariant();
         return c is "matroska" or "mkv" or "webm";
+    }
+
+    private static bool IsWebm(string container)
+    {
+        return string.Equals(container, "webm", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsMp4Like(string container)

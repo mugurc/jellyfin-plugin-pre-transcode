@@ -133,6 +133,56 @@ public class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void Matroska_ConvertsMovTextSubtitles_WhichTheMuxerCannotStore()
+    {
+        // Regression: copying an mp4 source's mov_text track into Matroska makes the muxer reject the
+        // header ("Subtitle codec 94213 is not supported") and the whole transcode fails seconds in.
+        var p = BaseProfile();
+        p.Container = "mkv";
+        var s = Source();
+        s.SubtitleStreams = new[] { new SubtitleStreamInfo { Codec = "mov_text", Language = "eng" } };
+        var cmd = Build(p, s);
+        Assert.Contains("-c:s:0 srt", cmd);
+        Assert.DoesNotContain("-c:s copy", cmd);
+    }
+
+    [Fact]
+    public void Matroska_CopiesStorableSubtitles_ConvertsOnlyTheRest()
+    {
+        var p = BaseProfile();
+        p.Container = "mkv";
+        var s = Source();
+        s.SubtitleStreams = new[]
+        {
+            new SubtitleStreamInfo { Codec = "subrip" },            // -> copy
+            new SubtitleStreamInfo { Codec = "mov_text" },           // -> convert
+            new SubtitleStreamInfo { Codec = "hdmv_pgs_subtitle" },  // -> copy (bitmap, storable)
+            new SubtitleStreamInfo { Codec = "ass" },                // -> copy
+        };
+        var cmd = Build(p, s);
+        Assert.Contains("-c:s:0 copy", cmd);
+        Assert.Contains("-c:s:1 srt", cmd);
+        Assert.Contains("-c:s:2 copy", cmd);
+        Assert.Contains("-c:s:3 copy", cmd);
+    }
+
+    [Fact]
+    public void Webm_ConvertsTextSubtitlesToWebvtt()
+    {
+        var p = BaseProfile();
+        p.Container = "webm";
+        var s = Source();
+        s.SubtitleStreams = new[]
+        {
+            new SubtitleStreamInfo { Codec = "webvtt" }, // -> copy
+            new SubtitleStreamInfo { Codec = "subrip" }, // webm holds only webvtt -> convert
+        };
+        var cmd = Build(p, s);
+        Assert.Contains("-c:s:0 copy", cmd);
+        Assert.Contains("-c:s:1 webvtt", cmd);
+    }
+
+    [Fact]
     public void Mp4Container_DoesNotMapAttachments()
     {
         var cmd = Build(BaseProfile(), Source());
