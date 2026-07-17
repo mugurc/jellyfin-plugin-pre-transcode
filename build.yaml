@@ -1,7 +1,7 @@
 ---
 name: "Pre-Transcode"
 guid: "8da245f6-7244-449b-9f32-46043f34b5f0"
-version: "0.5.1.0"
+version: "0.5.2.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "Pre-transcode media to an admin-defined compatibility baseline."
@@ -16,10 +16,10 @@ owner: "mugurc"
 artifacts:
 - "Jellyfin.Plugin.PreTranscode.dll"
 changelog: >
-  0.5.1.0 - Fixes the automatic library sweep re-transcoding files it had already produced output
-  for. In the separate-directory and add-as-alternate-version modes the original source is left
-  unchanged, so every daily sweep re-queued and re-encoded the same files, piling up duplicate
-  outputs. A source is now skipped when the profile's expected output already exists on disk
-  (robust — this survives clearing the job queue) or the queue records a completed transcode for it,
-  and a source that keeps failing is no longer auto-retried after 3 attempts (it can still be
-  requeued manually from the queue page).
+  0.5.2.0 - Fixes mp4 sources failing within seconds of starting whenever the output container is
+  Matroska. Subtitles in an mp4 are mov_text, which Matroska cannot store, so copying them made the
+  muxer reject the output header and abort the whole transcode (ffmpeg exit code 218, "Function not
+  implemented"). Subtitle tracks are now handled individually: those the output container can store
+  are copied verbatim, and the rest are converted to a text format it can (srt, or WebVTT for webm).
+  mp4 sources therefore transcode successfully and keep their subtitles instead of losing them.
+  Failed jobs on the queue page now expose the ffmpeg output that caused the failure.

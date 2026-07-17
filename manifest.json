@@ -9,6 +9,14 @@
     "imageUrl": "",
     "versions": [
       {
+        "version": "0.5.2.0",
+        "changelog": "Fixes mp4 sources failing within seconds of starting whenever the output container is Matroska. Subtitles in an mp4 are mov_text, which Matroska cannot store, so copying them made the muxer reject the output header and abort the whole transcode (ffmpeg exit code 218, \"Function not implemented\"). Subtitle tracks are now handled individually: those the output container can store are copied verbatim, and the rest are converted to a text format it can (srt, or WebVTT for webm). mp4 sources therefore transcode successfully and keep their subtitles instead of losing them. Failed jobs on the queue page now expose the ffmpeg output that caused the failure.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases/download/v0.5.2.0/pre-transcode-0.5.2.0.zip",
+        "checksum": "603282d09892ec6b7e2f8e16834e7084",
+        "timestamp": "2026-07-17T06:48:30Z"
+      },
+      {
         "version": "0.5.1.0",
         "changelog": "Fixes the automatic library sweep re-transcoding files it had already produced output for. In the separate-directory and add-as-alternate-version modes the original source is left unchanged, so every daily sweep re-queued and re-encoded the same files, piling up duplicate outputs. A source is now skipped when the profile's expected output already exists on disk (robust — this survives clearing the job queue) or the queue records a completed transcode for it, and a source that keeps failing is no longer auto-retried after 3 attempts (it can still be requeued manually).",
         "targetAbi": "10.11.0.0",
