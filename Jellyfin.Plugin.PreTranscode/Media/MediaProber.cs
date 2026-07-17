@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,8 +18,15 @@ namespace Jellyfin.Plugin.PreTranscode.Media;
 /// </summary>
 internal sealed class MediaProber : IMediaProber
 {
+    // Spawning ffprobe is by far the most expensive step, and the same unchanged file is probed
+    // repeatedly: on every sweep, and again by the executor for a file the evaluator just probed. Cache
+    // results keyed by path and validated by last-write-time + size, so an unchanged file is never
+    // re-probed. Bounded so a huge library cannot grow it without limit.
+    private const int MaxCacheEntries = 20000;
+
     private readonly IMediaEncoder _mediaEncoder;
     private readonly ILogger<MediaProber> _logger;
+    private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(StringComparer.OrdinalIgnoreCase);
 
     public MediaProber(IMediaEncoder mediaEncoder, ILogger<MediaProber> logger)
     {
@@ -26,6 +36,15 @@ internal sealed class MediaProber : IMediaProber
 
     public async Task<MediaProbeInfo?> ProbeAsync(string path, CancellationToken cancellationToken)
     {
+        var (mtimeTicks, size) = StatOrZero(path);
+        if (mtimeTicks != 0
+            && _cache.TryGetValue(path, out var cached)
+            && cached.MtimeTicks == mtimeTicks
+            && cached.Size == size)
+        {
+            return cached.Info;
+        }
+
         var probePath = FfmpegPaths.ResolveFfprobe(_mediaEncoder);
         string json;
         try
@@ -38,14 +57,54 @@ internal sealed class MediaProber : IMediaProber
             return null;
         }
 
+        MediaProbeInfo info;
         try
         {
-            return Parse(json, path);
+            info = Parse(json, path);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to parse ffprobe output for {Path}", path);
             return null;
+        }
+
+        if (mtimeTicks != 0)
+        {
+            if (_cache.Count >= MaxCacheEntries)
+            {
+                TrimCache();
+            }
+
+            _cache[path] = new CacheEntry(mtimeTicks, size, info);
+        }
+
+        return info;
+    }
+
+    private static (long MtimeTicks, long Size) StatOrZero(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            return info.Exists ? (info.LastWriteTimeUtc.Ticks, info.Length) : (0, 0);
+        }
+        catch (IOException)
+        {
+            return (0, 0);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return (0, 0);
+        }
+    }
+
+    private void TrimCache()
+    {
+        // Evicting an arbitrary quarter only forces those files to be re-probed later; correctness is
+        // unaffected because every entry is re-validated against the file's mtime/size on read.
+        foreach (var key in _cache.Keys.Take(_cache.Count / 4))
+        {
+            _cache.TryRemove(key, out _);
         }
     }
 
@@ -228,4 +287,6 @@ internal sealed class MediaProber : IMediaProber
 
         return double.TryParse(rate, NumberStyles.Float, CultureInfo.InvariantCulture, out var single) ? single : 0;
     }
+
+    private sealed record CacheEntry(long MtimeTicks, long Size, MediaProbeInfo Info);
 }
