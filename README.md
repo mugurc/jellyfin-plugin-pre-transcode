@@ -18,16 +18,7 @@ encoder, container, preset and tone-map dropdowns are populated by probing your 
 > but young. Test on a copy of your media first and start with the default **Separate directory**
 > output policy (which never touches your originals).
 
-<!-- SCREENSHOTS — uncomment once docs/queue.png and docs/settings.png exist.
-     Capture from Dashboard → Plugins → Pre-Transcode, browser window ~1400px wide, dark theme.
-
-## Screenshots
-
-| Queue & status | Encoding profile |
-|---|---|
-| ![The queue page: jobs with live progress bars, pause/cancel/requeue controls](docs/queue.png) | ![The settings page: codec and encoder dropdowns populated from ffmpeg](docs/settings.png) |
-
--->
+![image](/docs/image.png)
 
 ## Why?
 
