@@ -28,7 +28,7 @@ internal static class ProfileComplianceChecker
             return true;
         }
 
-        if (!IsCopy(profile.AudioCodec) && !Same(info.AudioCodec, profile.AudioCodec))
+        if (!IsCopy(profile.AudioCodec) && AudioCodecNeedsWork(profile, info))
         {
             reason = "audio codec differs";
             return true;
@@ -40,13 +40,16 @@ internal static class ProfileComplianceChecker
             return true;
         }
 
-        if (ExceedsResolution(profile, info, presets))
+        // Resolution and tone-mapping are only ever applied to a re-encoded video stream; when the
+        // profile copies the video verbatim the builder emits no scale/tonemap filter, so testing
+        // these against a copy profile would flag the encoder's own output as non-compliant forever.
+        if (!IsCopy(profile.VideoCodec) && ExceedsResolution(profile, info, presets))
         {
             reason = "resolution exceeds target";
             return true;
         }
 
-        if (profile.TonemapHdr && info.IsHdr)
+        if (!IsCopy(profile.VideoCodec) && profile.TonemapHdr && info.IsHdr)
         {
             reason = "HDR would be tone-mapped";
             return true;
@@ -80,6 +83,19 @@ internal static class ProfileComplianceChecker
         }
     }
 
+    // The encoder converts every audio track, so the file is only compliant when *every* track already
+    // matches the target codec; considering only the first track would skip a file whose other-language
+    // tracks still force live transcoding — the exact thing pre-transcoding exists to prevent.
+    private static bool AudioCodecNeedsWork(EncodingProfile profile, MediaProbeInfo info)
+    {
+        if (info.AudioStreams.Count > 0)
+        {
+            return info.AudioStreams.Any(s => !Same(s.Codec, profile.AudioCodec));
+        }
+
+        return !Same(info.AudioCodec, profile.AudioCodec);
+    }
+
     private static bool ExceedsChannels(EncodingProfile profile, MediaProbeInfo info)
     {
         if (IsCopy(profile.AudioCodec))
@@ -87,13 +103,26 @@ internal static class ProfileComplianceChecker
             return false;
         }
 
-        return profile.ChannelPolicy switch
+        var cap = profile.ChannelPolicy switch
         {
-            AudioChannelPolicy.CapStereo => info.AudioChannels > 2,
-            AudioChannelPolicy.Cap51 => info.AudioChannels > 6,
-            AudioChannelPolicy.CapCustom => profile.MaxAudioChannels > 0 && info.AudioChannels > profile.MaxAudioChannels,
-            _ => false
+            AudioChannelPolicy.CapStereo => 2,
+            AudioChannelPolicy.Cap51 => 6,
+            AudioChannelPolicy.CapCustom when profile.MaxAudioChannels > 0 => profile.MaxAudioChannels,
+            _ => int.MaxValue
         };
+
+        if (cap == int.MaxValue)
+        {
+            return false;
+        }
+
+        // The builder downmixes each track individually, so any single track over the cap is work.
+        if (info.AudioStreams.Count > 0)
+        {
+            return info.AudioStreams.Any(s => s.Channels > cap);
+        }
+
+        return info.AudioChannels > cap;
     }
 
     private static bool ContainerMatches(string sourceContainer, string targetContainer)

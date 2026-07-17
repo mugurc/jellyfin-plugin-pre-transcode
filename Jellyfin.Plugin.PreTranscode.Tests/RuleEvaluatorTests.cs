@@ -39,6 +39,20 @@ public class RuleEvaluatorTests
     }
 
     [Theory]
+    [InlineData(ComparisonOperator.Equals)]
+    [InlineData(ComparisonOperator.NotEquals)]
+    [InlineData(ComparisonOperator.In)]
+    [InlineData(ComparisonOperator.NotIn)]
+    public void StringCondition_EmptyValue_NeverMatches(ComparisonOperator op)
+    {
+        // A half-configured condition (operator chosen, value not yet typed) must not act as a filter.
+        // Before the guard, NotEquals/NotIn against an empty value matched every file and queued the
+        // whole library.
+        var info = Info(videoCodec: "hevc");
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.VideoCodec, op, string.Empty), info));
+    }
+
+    [Theory]
     [InlineData(2160, ComparisonOperator.GreaterThan, "1080", true)]
     [InlineData(720, ComparisonOperator.GreaterThan, "1080", false)]
     [InlineData(1080, ComparisonOperator.GreaterThanOrEqual, "1080", true)]
@@ -47,6 +61,29 @@ public class RuleEvaluatorTests
     {
         var info = Info(height: height);
         Assert.Equal(expected, RuleEvaluator.EvaluateCondition(Cond(ConditionType.VideoHeight, op, value), info));
+    }
+
+    [Theory]
+    [InlineData(ComparisonOperator.LessThan, "3000")]
+    [InlineData(ComparisonOperator.LessThanOrEqual, "3000")]
+    [InlineData(ComparisonOperator.GreaterThan, "3000")]
+    [InlineData(ComparisonOperator.Equals, "0")]
+    [InlineData(ComparisonOperator.NotEquals, "3000")]
+    [InlineData(ComparisonOperator.NotIn, "128,256")]
+    public void NumericCondition_UnknownValue_NeverMatchesThreshold(ComparisonOperator op, string value)
+    {
+        // Matroska reports no per-stream video bitrate, so VideoBitrateKbps is 0 (unknown). An unknown
+        // value must not satisfy any threshold comparison — otherwise "LessThan 3000" would match every
+        // mkv. Only NotExists can test for the absence.
+        var info = Info(videoBitrateKbps: 0);
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.VideoBitrateKbps, op, value), info));
+    }
+
+    [Fact]
+    public void NumericCondition_UnknownValue_NotExistsMatches()
+    {
+        var info = Info(videoBitrateKbps: 0);
+        Assert.True(RuleEvaluator.EvaluateCondition(Cond(ConditionType.VideoBitrateKbps, ComparisonOperator.NotExists), info));
     }
 
     [Fact]

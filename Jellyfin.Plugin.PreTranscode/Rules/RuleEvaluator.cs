@@ -72,6 +72,17 @@ internal static class RuleEvaluator
     private static bool EvaluateString(string actual, RuleCondition condition)
     {
         actual ??= string.Empty;
+
+        // A value-comparison operator with no configured value is an unfinished condition, not a filter.
+        // Without this guard NotEquals/NotIn against an empty value match every file (e.g. a rule the
+        // admin added but has not yet typed a codec into would queue the entire library).
+        if (string.IsNullOrWhiteSpace(condition.Value)
+            && condition.Operator is ComparisonOperator.Equals or ComparisonOperator.NotEquals
+                or ComparisonOperator.In or ComparisonOperator.NotIn)
+        {
+            return false;
+        }
+
         switch (condition.Operator)
         {
             case ComparisonOperator.Equals:
@@ -93,12 +104,25 @@ internal static class RuleEvaluator
 
     private static bool EvaluateNumber(double actual, RuleCondition condition)
     {
+        // Presence tests come first and are the only way to reason about an absent value.
         switch (condition.Operator)
         {
             case ComparisonOperator.Exists:
                 return actual > 0;
             case ComparisonOperator.NotExists:
                 return actual <= 0;
+        }
+
+        // An unknown/absent value (<= 0) cannot be meaningfully compared against a threshold — Matroska,
+        // for instance, reports no per-stream video bitrate, so VideoBitrateKbps is 0 there. Without this
+        // a rule like "VideoBitrateKbps LessThan 3000" (or NotIn/NotEquals) would match every such file.
+        if (actual <= 0)
+        {
+            return false;
+        }
+
+        switch (condition.Operator)
+        {
             case ComparisonOperator.In:
                 return SplitNumbers(condition.Value).Any(v => NearlyEqual(v, actual));
             case ComparisonOperator.NotIn:

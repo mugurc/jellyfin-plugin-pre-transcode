@@ -88,4 +88,52 @@ public class ProfileComplianceCheckerTests
         ProfileComplianceChecker.NeedsWork(Profile(), Info(vc: "hevc"), Presets, out var reason);
         Assert.Contains("codec", reason, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void CopyVideo_OverCapAndHdr_IsCompliant_NoInfiniteReencode()
+    {
+        // "Leave my video alone, just normalise audio/container": video is copied, so the builder emits
+        // no scale/tonemap filter. The checker must therefore ignore resolution and HDR, or it would flag
+        // the encoder's own output as non-compliant forever and re-transcode it on every sweep.
+        var p = Profile();
+        p.VideoCodec = "copy";
+        p.ResolutionMode = ResolutionMode.CapHeight;
+        p.MaxHeight = 1080;
+        p.TonemapHdr = true;
+
+        Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(p, Info(vc: "hevc", w: 3840, h: 2160, hdr: true), Presets));
+    }
+
+    [Fact]
+    public void NonFirstAudioTrackDiffers_NeedsWork()
+    {
+        // Track 0 already matches the target; a later track (e.g. a foreign-language TrueHD 7.1) does not.
+        // Considering only track 0 would skip the file forever while that track keeps forcing live
+        // transcoding — exactly what pre-transcoding is meant to eliminate.
+        var p = Profile();
+        p.ChannelPolicy = AudioChannelPolicy.CapStereo;
+        var info = Info(ac: "aac", ch: 2);
+        info.AudioStreams = new[]
+        {
+            new AudioStreamInfo { Codec = "aac", Channels = 2 },
+            new AudioStreamInfo { Codec = "truehd", Channels = 8 }
+        };
+
+        Assert.False(ProfileComplianceChecker.IsAlreadyCompliant(p, info, Presets));
+    }
+
+    [Fact]
+    public void AllAudioTracksCompliant_IsCompliant()
+    {
+        var p = Profile();
+        p.ChannelPolicy = AudioChannelPolicy.CapStereo;
+        var info = Info(ac: "aac", ch: 2);
+        info.AudioStreams = new[]
+        {
+            new AudioStreamInfo { Codec = "aac", Channels = 2 },
+            new AudioStreamInfo { Codec = "aac", Channels = 2 }
+        };
+
+        Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(p, info, Presets));
+    }
 }
