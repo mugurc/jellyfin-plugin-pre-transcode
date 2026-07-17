@@ -103,10 +103,11 @@ internal sealed class JobQueue : IJobQueue
                 return null;
             }
 
+            // Single pass for the oldest pending job, rather than sorting the whole (potentially large,
+            // never-pruned) list on every claim.
             var job = _jobs
                 .Where(j => j.Status == JobStatus.Pending)
-                .OrderBy(j => j.CreatedUtc)
-                .FirstOrDefault();
+                .MinBy(j => j.CreatedUtc);
 
             if (job is null)
             {

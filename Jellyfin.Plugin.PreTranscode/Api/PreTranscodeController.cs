@@ -98,15 +98,30 @@ public class PreTranscodeController : ControllerBase
     [ProducesResponseType(StatusCodes.Status200OK)]
     public ActionResult<object> GetQueueStatus()
     {
+        // Single pass rather than five separate Count() enumerations; this endpoint is polled every 2s.
+        int pending = 0, processing = 0, completed = 0, failed = 0, skipped = 0;
         var jobs = _queue.GetJobs();
+        foreach (var job in jobs)
+        {
+            switch (job.Status)
+            {
+                case JobStatus.Pending: pending++; break;
+                case JobStatus.Processing: processing++; break;
+                case JobStatus.Completed: completed++; break;
+                case JobStatus.Failed: failed++; break;
+                case JobStatus.Skipped: skipped++; break;
+                default: break;
+            }
+        }
+
         return Ok(new
         {
             IsPaused = _queue.IsPaused,
-            Pending = jobs.Count(j => j.Status == JobStatus.Pending),
-            Processing = jobs.Count(j => j.Status == JobStatus.Processing),
-            Completed = jobs.Count(j => j.Status == JobStatus.Completed),
-            Failed = jobs.Count(j => j.Status == JobStatus.Failed),
-            Skipped = jobs.Count(j => j.Status == JobStatus.Skipped),
+            Pending = pending,
+            Processing = processing,
+            Completed = completed,
+            Failed = failed,
+            Skipped = skipped,
             Total = jobs.Count
         });
     }

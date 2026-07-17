@@ -78,11 +78,17 @@ public sealed class ItemEvaluator
                 IsVirtualItem = false
             });
 
+            // Snapshot the job list once for the whole sweep. The per-item pre-check only needs it to
+            // skip already-handled sources cheaply; the race-free final decision is still made live under
+            // the queue lock inside Enqueue. Calling GetJobs() per item copied the entire (never-pruned)
+            // list N times — O(items x jobs).
+            var knownJobs = _queue.GetJobs();
+
             var enqueued = 0;
             for (var i = 0; i < items.Count; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (await EvaluateAndEnqueueAsync(items[i], cancellationToken).ConfigureAwait(false))
+                if (await EvaluateAndEnqueueAsync(items[i], cancellationToken, knownJobs).ConfigureAwait(false))
                 {
                     enqueued++;
                 }
@@ -99,7 +105,7 @@ public sealed class ItemEvaluator
         }
     }
 
-    internal async Task<bool> EvaluateAndEnqueueAsync(BaseItem item, CancellationToken cancellationToken)
+    internal async Task<bool> EvaluateAndEnqueueAsync(BaseItem item, CancellationToken cancellationToken, IReadOnlyList<TranscodeJob>? knownJobs = null)
     {
         var config = Plugin.Instance?.Configuration;
         if (config is null || !config.Enabled)
@@ -131,7 +137,7 @@ public sealed class ItemEvaluator
         // for this profile already exists on disk (robust — survives clearing the queue), or (b) the
         // queue records a completed transcode for it, or it has failed too many times to keep retrying.
         if (OutputAlreadyExists(profile, path)
-            || AlreadyHandled(_queue.GetJobs(), path, profile.Id, File.Exists, MaxAutoFailedAttempts))
+            || AlreadyHandled(knownJobs ?? _queue.GetJobs(), path, profile.Id, File.Exists, MaxAutoFailedAttempts))
         {
             return false;
         }
@@ -244,6 +250,14 @@ public sealed class ItemEvaluator
 
     private (EncodingProfile? Profile, IReadOnlyList<TriggerRule> Rules, bool Enabled) ResolveForLibrary(PluginConfiguration config, BaseItem item)
     {
+        // No overrides configured: skip the per-item collection-folder lookup entirely and go straight to
+        // the default profile + global rules. This runs for every item in a sweep, so avoiding the
+        // library query when it can never match a thing matters on large libraries.
+        if (config.LibraryOverrides.Count == 0)
+        {
+            return (DefaultProfile(config), config.GlobalRules, true);
+        }
+
         LibraryOverride? found = null;
         try
         {
