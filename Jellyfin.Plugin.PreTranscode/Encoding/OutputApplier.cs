@@ -151,9 +151,11 @@ internal static class OutputApplier
         }
     }
 
-    // Names the output "<original> - <label>.<ext>". That " - <label>" suffix is Jellyfin's native
-    // convention for alternate versions: files in the same folder sharing a base name are grouped
-    // into one item, and the label is what Jellyfin shows in its version selector.
+    // Names the output "<original> - <label>.<ext>", a distinct name next to the source. NOTE: Jellyfin's
+    // filename-based version grouping applies to MOVIES only (a version file must begin with the movie's
+    // own folder name); for TV EPISODES it does nothing, so the two files are grouped into one item purely
+    // by the database link that AlternateVersionMerger sets, not by this name. The label is what Jellyfin
+    // shows in the version selector once the link is in place.
     private static string AddAsSibling(string sourcePath, string tempOutputPath, string extension, string label)
     {
         var directory = Path.GetDirectoryName(sourcePath) ?? ".";

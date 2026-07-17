@@ -18,21 +18,30 @@ namespace Jellyfin.Plugin.PreTranscode.Library;
 /// Best-effort and never throws: if the output cannot be indexed/linked, the file is still on disk and
 /// can be merged manually.
 /// </summary>
-internal sealed class AlternateVersionMerger
+internal sealed class AlternateVersionMerger : IDisposable
 {
-    // A library scan must index the new file before it exists as an item we can link. Give realtime
-    // monitoring a short head start, then force a scan, then poll until it appears (bounded).
-    private static readonly TimeSpan RealtimeGracePeriod = TimeSpan.FromSeconds(20);
+    // How long to wait for the newly-written file to be indexed as a library item before giving up.
     private static readonly TimeSpan FindTimeout = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
 
     private readonly ILibraryManager _libraryManager;
     private readonly ILogger<AlternateVersionMerger> _logger;
 
+    // Merges are fired detached, one per completed episode. Running them concurrently — each finding and
+    // rewriting items while a library scan re-indexes the very same new files — is what left some
+    // episodes as unmerged duplicates (a last-writer-wins race with no locking on the DB row). Doing
+    // them strictly one at a time removes that race.
+    private readonly SemaphoreSlim _mergeLock = new(1, 1);
+
     public AlternateVersionMerger(ILibraryManager libraryManager, ILogger<AlternateVersionMerger> logger)
     {
         _libraryManager = libraryManager;
         _logger = logger;
+    }
+
+    public void Dispose()
+    {
+        _mergeLock.Dispose();
     }
 
     /// <summary>
@@ -45,6 +54,7 @@ internal sealed class AlternateVersionMerger
     /// <returns>A task.</returns>
     public async Task TryMergeAsync(string sourcePath, string outputPath, CancellationToken cancellationToken)
     {
+        await _mergeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             if (_libraryManager.FindByPath(sourcePath, false) is not Video primary)
@@ -69,6 +79,12 @@ internal sealed class AlternateVersionMerger
                 return;
             }
 
+            // Re-fetch the canonical, cached instances by id. FindByPath materialises fresh detached
+            // copies; mutating those races the copy the scanner holds. GetItemById returns the shared
+            // instance, so the merge writes to the same object subsequent saves see.
+            primary = _libraryManager.GetItemById(primary.Id) as Video ?? primary;
+            alternate = _libraryManager.GetItemById(alternate.Id) as Video ?? alternate;
+
             MergeInto(primary, alternate);
             await alternate.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
             await primary.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
@@ -82,6 +98,10 @@ internal sealed class AlternateVersionMerger
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Auto-merge of alternate version failed for {Output}", outputPath);
+        }
+        finally
+        {
+            _mergeLock.Release();
         }
     }
 
@@ -112,28 +132,19 @@ internal sealed class AlternateVersionMerger
 
     private async Task<Video?> WaitForOutputItemAsync(string outputPath, CancellationToken cancellationToken)
     {
-        // Maybe realtime monitoring already indexed it.
-        if (_libraryManager.FindByPath(outputPath, false) is Video already)
-        {
-            return already;
-        }
-
-        await Task.Delay(RealtimeGracePeriod, cancellationToken).ConfigureAwait(false);
-        if (_libraryManager.FindByPath(outputPath, false) is Video afterGrace)
-        {
-            return afterGrace;
-        }
-
-        _logger.LogInformation("Requesting a library scan so {Path} can be indexed and merged", outputPath);
-        _libraryManager.QueueLibraryScan();
-
+        // Just wait for the file to be indexed; do NOT force a library scan. Jellyfin already rescans
+        // when a file is added, and forcing an extra full scan per completed episode is precisely what
+        // re-indexed the fresh file concurrently with the merge and clobbered the link (leaving a
+        // duplicate episode) — besides being very expensive on a large library. If realtime monitoring is
+        // off and the file is never indexed, the merge is simply skipped and can be done manually.
         for (var waited = TimeSpan.Zero; waited < FindTimeout; waited += PollInterval)
         {
-            await Task.Delay(PollInterval, cancellationToken).ConfigureAwait(false);
             if (_libraryManager.FindByPath(outputPath, false) is Video found)
             {
                 return found;
             }
+
+            await Task.Delay(PollInterval, cancellationToken).ConfigureAwait(false);
         }
 
         return null;
