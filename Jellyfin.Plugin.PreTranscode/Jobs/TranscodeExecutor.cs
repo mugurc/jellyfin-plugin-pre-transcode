@@ -69,6 +69,28 @@ internal sealed class TranscodeExecutor
                 return;
             }
 
+            // Re-check idempotency at execution time, not just at enqueue time. A source can legitimately
+            // be queued more than once (a fresh library scan re-fires evaluation for every item, and in
+            // alternate-version mode each completed job triggers a scan), and nothing prevents a stale
+            // duplicate from reaching the worker. Without this the profile's output for that source is
+            // produced a second time — MakeUnique names it "... (1)" — so the same episode is transcoded
+            // again and a duplicate output piles up. If the expected output is already on disk, this job
+            // is a no-op; skip it.
+            var expectedOutput = OutputApplier.ExpectedOutputPath(profile, job.SourcePath);
+            if (expectedOutput is not null
+                && !string.Equals(expectedOutput, job.SourcePath, StringComparison.OrdinalIgnoreCase)
+                && File.Exists(expectedOutput))
+            {
+                job.Status = JobStatus.Skipped;
+                job.StatusDetail = "output already exists";
+                job.OutputPath = expectedOutput;
+                job.Progress = 100;
+                job.FinishedUtc = DateTime.UtcNow;
+                _queue.Update(job);
+                _logger.LogInformation("Skipped {Path}: output already exists at {Output}", job.SourcePath, expectedOutput);
+                return;
+            }
+
             SetDetail(job, "probing");
             var probe = await _prober.ProbeAsync(job.SourcePath, cancellationToken).ConfigureAwait(false);
             if (probe is null)
