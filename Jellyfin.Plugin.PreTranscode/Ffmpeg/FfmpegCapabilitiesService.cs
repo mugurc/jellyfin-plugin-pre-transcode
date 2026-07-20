@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -36,7 +37,12 @@ internal sealed class FfmpegCapabilitiesService : IFfmpegCapabilitiesService, ID
     private readonly IMediaEncoder _mediaEncoder;
     private readonly ILogger<FfmpegCapabilitiesService> _logger;
     private readonly SemaphoreSlim _probeLock = new(1, 1);
-    private readonly Dictionary<string, EncoderPresetInfo> _presetCache = new(StringComparer.OrdinalIgnoreCase);
+
+    // Concurrent because the fast path reads it without holding _probeLock (line "TryGetValue" below)
+    // while a probing thread writes it under the lock. A plain Dictionary read racing a write that
+    // resizes it is undefined behaviour in .NET (it can throw or spin a CPU core). The lock still
+    // serializes the actual ffmpeg probes; the dictionary only needs to tolerate the lock-free read.
+    private readonly ConcurrentDictionary<string, EncoderPresetInfo> _presetCache = new(StringComparer.OrdinalIgnoreCase);
 
     private FfmpegCapabilities? _cache;
 
