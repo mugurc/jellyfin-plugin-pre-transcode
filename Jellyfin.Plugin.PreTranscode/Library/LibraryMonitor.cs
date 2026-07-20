@@ -121,6 +121,14 @@ internal sealed class LibraryMonitor : IHostedService, IDisposable
                     await _signal.WaitAsync(DeferredPollInterval, cancellationToken).ConfigureAwait(false);
                 }
 
+                // Collapse a burst: importing a library raises thousands of added/updated events, each
+                // Releasing the semaphore. A single ProcessDueAsync pass already scans every pending item,
+                // so drain the queued signals first — otherwise the loop wakes and runs a full O(pending)
+                // scan once per event, which is O(N^2) CPU + GC churn on a large import.
+                while (_signal.Wait(0, CancellationToken.None))
+                {
+                }
+
                 await ProcessDueAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
