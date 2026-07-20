@@ -16,6 +16,13 @@ internal static class OutputApplier
 {
     private const string DefaultVersionLabel = "Pre-Transcode";
 
+    // Whether two paths denote the same file is a filesystem property: case-insensitive on Windows,
+    // case-sensitive on Linux/Docker (the deployment target). Using OrdinalIgnoreCase everywhere treated
+    // "/m/Movie.MKV" and "/m/Movie.mkv" as one file on Linux, which could skip the MakeUnique guard and
+    // overwrite an unrelated file, or leave the source un-deleted. Ordinal off Windows fixes both.
+    private static readonly StringComparison PathComparison =
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
     public static string Apply(EncodingProfile profile, string sourcePath, string tempOutputPath)
     {
         var extension = ContainerExtension(profile.Container);
@@ -92,7 +99,7 @@ internal static class OutputApplier
         var stem = Path.GetFileNameWithoutExtension(sourcePath);
         var finalPath = Path.Combine(directory, stem + extension);
 
-        var sameAsSource = string.Equals(finalPath, sourcePath, StringComparison.OrdinalIgnoreCase);
+        var sameAsSource = string.Equals(finalPath, sourcePath, PathComparison);
 
         // Never destroy a pre-existing *different* file. When the container changes (e.g. movie.mkv ->
         // movie.mp4) an unrelated movie.mp4 may already sit next to the source; only the source itself
@@ -126,7 +133,7 @@ internal static class OutputApplier
             throw;
         }
 
-        if (!string.Equals(finalPath, sourcePath, StringComparison.OrdinalIgnoreCase) && File.Exists(sourcePath))
+        if (!string.Equals(finalPath, sourcePath, PathComparison) && File.Exists(sourcePath))
         {
             File.Delete(sourcePath);
         }

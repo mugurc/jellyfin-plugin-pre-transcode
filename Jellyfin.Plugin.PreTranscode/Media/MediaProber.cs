@@ -26,7 +26,11 @@ internal sealed class MediaProber : IMediaProber
 
     private readonly IMediaEncoder _mediaEncoder;
     private readonly ILogger<MediaProber> _logger;
-    private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(StringComparer.OrdinalIgnoreCase);
+
+    // Case-sensitivity of the cache key must match the filesystem: on Linux "/m/A.mkv" and "/m/a.mkv"
+    // are different files and must not share a cache entry; on Windows they are the same file.
+    private readonly ConcurrentDictionary<string, CacheEntry> _cache = new(
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
     public MediaProber(IMediaEncoder mediaEncoder, ILogger<MediaProber> logger)
     {
