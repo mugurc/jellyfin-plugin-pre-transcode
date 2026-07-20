@@ -35,20 +35,21 @@ internal static class FfmpegCommandBuilder
         args.Add("0:v:0");
         args.Add("-map");
         args.Add("0:a?");
-        if (mkvLike)
+        if (mkvLike && !IsWebm(profile.Container))
         {
-            // Matroska can hold every subtitle format (text and image) plus attachments, so carry all
-            // subtitle tracks and any embedded fonts (needed for ASS/SSA to render) across losslessly.
+            // True Matroska (mkv) can hold every subtitle format (text and image) plus attachments, so
+            // carry all subtitle tracks and any embedded fonts (needed for ASS/SSA to render) across.
             args.Add("-map");
             args.Add("0:s?");
             args.Add("-map");
             args.Add("0:t?");
         }
-        else if (mp4Like)
+        else if (mp4Like || IsWebm(profile.Container))
         {
-            // mp4/mov can store text subtitles (as mov_text) but not image subtitles (PGS/VOBSUB) — the
-            // muxer rejects a bitmap track outright. Map each text subtitle track individually and leave
-            // image tracks out, so subtitles survive the transcode instead of being silently dropped.
+            // mp4/mov (mov_text) and webm (webvtt) can store only TEXT subtitles. Map those individually
+            // and leave image subtitles (PGS/VOBSUB) out — the container cannot store them and they cannot
+            // be converted to text, so mapping them would abort the whole encode. (webm also holds no
+            // attachments, so its fonts are not mapped either.)
             for (var i = 0; i < source.SubtitleStreams.Count; i++)
             {
                 if (IsTextSubtitle(source.SubtitleStreams[i].Codec))
@@ -134,15 +135,15 @@ internal static class FfmpegCommandBuilder
         }
 
         // ---- subtitles ----
-        if (mkvLike)
+        if (mkvLike && !IsWebm(profile.Container))
         {
             AddSubtitles(args, profile.Container, source);
         }
-        else if (mp4Like && source.SubtitleStreams.Any(s => IsTextSubtitle(s.Codec)))
+        else if ((mp4Like || IsWebm(profile.Container)) && source.SubtitleStreams.Any(s => IsTextSubtitle(s.Codec)))
         {
-            // The tracks mapped above are all text; mov_text is the subtitle codec mp4/mov carry.
+            // The tracks mapped above are all text: mov_text for mp4/mov, webvtt for webm.
             args.Add("-c:s");
-            args.Add("mov_text");
+            args.Add(IsWebm(profile.Container) ? "webvtt" : "mov_text");
         }
 
         AddRaw(args, profile.ExtraOutputArgs);
@@ -410,9 +411,34 @@ internal static class FfmpegCommandBuilder
             return;
         }
 
-        foreach (var token in raw.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        // Split on spaces but keep double-quoted runs together, so an advanced arg like
+        // -metadata title="My Movie" becomes two tokens (-metadata, title=My Movie) instead of three
+        // with stray quote characters. Each resulting token is passed verbatim via ArgumentList.
+        var current = new StringBuilder();
+        var inQuotes = false;
+        foreach (var c in raw)
         {
-            args.Add(token);
+            if (c == '"')
+            {
+                inQuotes = !inQuotes;
+            }
+            else if (c == ' ' && !inQuotes)
+            {
+                if (current.Length > 0)
+                {
+                    args.Add(current.ToString());
+                    current.Clear();
+                }
+            }
+            else
+            {
+                current.Append(c);
+            }
+        }
+
+        if (current.Length > 0)
+        {
+            args.Add(current.ToString());
         }
     }
 

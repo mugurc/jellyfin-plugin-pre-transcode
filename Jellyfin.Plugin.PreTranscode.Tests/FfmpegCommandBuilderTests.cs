@@ -220,19 +220,20 @@ public class FfmpegCommandBuilderTests
     }
 
     [Fact]
-    public void Webm_ConvertsTextSubtitlesToWebvtt()
+    public void Webm_KeepsTextSubtitlesAsWebvtt_DropsImageSubtitles()
     {
         var p = BaseProfile();
         p.Container = "webm";
         var s = Source();
         s.SubtitleStreams = new[]
         {
-            new SubtitleStreamInfo { Codec = "webvtt" }, // -> copy
-            new SubtitleStreamInfo { Codec = "subrip" }, // webm holds only webvtt -> convert
+            new SubtitleStreamInfo { Codec = "subrip" },            // text -> mapped, converted
+            new SubtitleStreamInfo { Codec = "hdmv_pgs_subtitle" }, // image -> dropped (webm can't store it)
         };
         var cmd = Build(p, s);
-        Assert.Contains("-c:s:0 copy", cmd);
-        Assert.Contains("-c:s:1 webvtt", cmd);
+        Assert.Contains("-map 0:s:0", cmd);
+        Assert.DoesNotContain("-map 0:s:1", cmd);
+        Assert.Contains("-c:s webvtt", cmd);
     }
 
     [Fact]
