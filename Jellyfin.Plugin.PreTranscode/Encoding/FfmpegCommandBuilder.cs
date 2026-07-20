@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text;
 using Jellyfin.Plugin.PreTranscode.Configuration;
 using Jellyfin.Plugin.PreTranscode.Media;
@@ -28,6 +29,7 @@ internal static class FfmpegCommandBuilder
         var args = new List<string> { "-y", "-hide_banner", "-protocol_whitelist", "file,crypto,data", "-i", inputPath };
 
         var mkvLike = IsMatroska(profile.Container);
+        var mp4Like = IsMp4Like(profile.Container);
 
         args.Add("-map");
         args.Add("0:v:0");
@@ -41,6 +43,20 @@ internal static class FfmpegCommandBuilder
             args.Add("0:s?");
             args.Add("-map");
             args.Add("0:t?");
+        }
+        else if (mp4Like)
+        {
+            // mp4/mov can store text subtitles (as mov_text) but not image subtitles (PGS/VOBSUB) — the
+            // muxer rejects a bitmap track outright. Map each text subtitle track individually and leave
+            // image tracks out, so subtitles survive the transcode instead of being silently dropped.
+            for (var i = 0; i < source.SubtitleStreams.Count; i++)
+            {
+                if (IsTextSubtitle(source.SubtitleStreams[i].Codec))
+                {
+                    args.Add("-map");
+                    args.Add("0:s:" + N(i));
+                }
+            }
         }
 
         args.Add("-map_metadata");
@@ -121,6 +137,12 @@ internal static class FfmpegCommandBuilder
         if (mkvLike)
         {
             AddSubtitles(args, profile.Container, source);
+        }
+        else if (mp4Like && source.SubtitleStreams.Any(s => IsTextSubtitle(s.Codec)))
+        {
+            // The tracks mapped above are all text; mov_text is the subtitle codec mp4/mov carry.
+            args.Add("-c:s");
+            args.Add("mov_text");
         }
 
         AddRaw(args, profile.ExtraOutputArgs);
@@ -212,6 +234,18 @@ internal static class FfmpegCommandBuilder
             args.Add("-c:s:" + N(i));
             args.Add(CanStoreSubtitle(container, source.SubtitleStreams[i].Codec) ? "copy" : textCodec);
         }
+    }
+
+    // Text-based subtitle codecs, which can be transcoded to another text format (srt, webvtt, mov_text).
+    // Image subtitles (PGS/VOBSUB/DVB) cannot, so they must not be routed to a text-only container.
+    private static bool IsTextSubtitle(string codec)
+    {
+        return (codec ?? string.Empty).ToLowerInvariant() switch
+        {
+            "subrip" or "srt" or "ass" or "ssa" or "webvtt" or "mov_text" or "text"
+                or "subviewer" or "microdvd" or "sami" or "realtext" or "stl" => true,
+            _ => false
+        };
     }
 
     private static bool CanStoreSubtitle(string container, string codec)

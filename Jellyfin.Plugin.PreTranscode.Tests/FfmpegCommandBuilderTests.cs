@@ -229,6 +229,37 @@ public class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void Mp4Container_KeepsTextSubtitlesAsMovText()
+    {
+        // Regression: mp4/mov previously mapped no subtitles at all, silently dropping them. Text tracks
+        // must be carried across as mov_text (verified with real ffmpeg) instead of lost.
+        var p = BaseProfile(); // Container = mp4
+        var s = Source();
+        s.SubtitleStreams = new[]
+        {
+            new SubtitleStreamInfo { Codec = "subrip" },
+            new SubtitleStreamInfo { Codec = "ass" },
+        };
+        var cmd = Build(p, s);
+        Assert.Contains("-map 0:s:0", cmd);
+        Assert.Contains("-map 0:s:1", cmd);
+        Assert.Contains("-c:s mov_text", cmd);
+    }
+
+    [Fact]
+    public void Mp4Container_DropsImageSubtitles()
+    {
+        // mp4/mov cannot store bitmap subtitles (PGS/VOBSUB) and mov_text cannot encode them, so an
+        // image-only source maps no subtitle track (dropping it) rather than failing the whole encode.
+        var p = BaseProfile(); // Container = mp4
+        var s = Source();
+        s.SubtitleStreams = new[] { new SubtitleStreamInfo { Codec = "hdmv_pgs_subtitle" } };
+        var cmd = Build(p, s);
+        Assert.DoesNotContain("-map 0:s", cmd);
+        Assert.DoesNotContain("mov_text", cmd);
+    }
+
+    [Fact]
     public void MultiAudio_CopiesTracksAlreadyInTargetCodec_ReEncodesTheRest()
     {
         var p = BaseProfile(); // target audio codec = aac
