@@ -9,6 +9,14 @@
     "imageUrl": "",
     "versions": [
       {
+        "version": "0.5.5.0",
+        "changelog": "A broad correctness, safety and performance release from a full code audit. Audio: the channel cap now actually downmixes (e.g. 5.1 to stereo) — it was silently ignored, which under replace-in-place also re-transcoded the file endlessly. Subtitles: mp4/mov outputs keep their text subtitles (as mov_text) instead of dropping them, and webm drops only the image subtitles it cannot store rather than failing the encode. Resolution: an odd cap (e.g. 1281) no longer aborts the encode. Encoders: VAAPI/VideoToolbox no longer receive a -preset they reject. Data safety: paths are compared case-sensitively off Windows so replace-in-place cannot overwrite an unrelated same-name file, and sibling/separate-directory outputs are written crash-safely. Rules and library: a half-configured rule no longer matches the whole library, files with no audio or an empty-container profile are no longer re-transcoded every sweep, embedded cover art is no longer mistaken for the video stream, and the sweep survives a bad item. Queue: pausing can no longer leave an encode permanently frozen, a just-started job's cancel is no longer lost, and ffmpeg is killed on cancel or shutdown; the encoder-preset cache is now thread-safe and a large library import no longer does O(n^2) work. Also: tighter Dolby Vision detection and UTF-8 decoding of ffmpeg output.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases/download/v0.5.5.0/pre-transcode-0.5.5.0.zip",
+        "checksum": "bba03f761a59bd2857f6c8b1c849d607",
+        "timestamp": "2026-07-20T11:31:57Z"
+      },
+      {
         "version": "0.5.4.0",
         "changelog": "Fixes TV episodes appearing twice in Jellyfin when using the \"add as alternate version\" output mode. The transcode is linked to its source as an alternate version via a Jellyfin database link, but the plugin fired one merge per completed episode and forced a full library scan each time; those scans re-indexed the freshly-written file concurrently with the merge, and with no locking it was last-writer-wins, so some episodes collapsed to one entry and others were left as a duplicate. Merges are now serialized and no longer force a scan, and the link is applied to the canonical item. Note: Jellyfin's filename version grouping is movies-only, so TV relies on this link; if a duplicate remains, merge the two entries once from the dashboard or use replace-in-place.",
         "targetAbi": "10.11.0.0",
