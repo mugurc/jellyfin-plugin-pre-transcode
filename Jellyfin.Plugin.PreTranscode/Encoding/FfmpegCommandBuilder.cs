@@ -161,6 +161,10 @@ internal static class FfmpegCommandBuilder
     // Preserves every audio track (all languages). A track already in the target codec and within the
     // channel cap is copied verbatim (no quality loss); the rest are re-encoded, each downmixed only if
     // it individually exceeds the cap. Per-stream specifiers (:a:i) refer to the i-th mapped audio track.
+    // NOTE: the channel-count option must also carry the audio type qualifier — "-ac:a:i". A bare
+    // "-ac:i" is an output-stream-index specifier (stream 0 is the video, mapped first), so ffmpeg
+    // silently ignores it and the downmix never happens — verified with real ffmpeg: "-ac:0 2" leaves a
+    // 5.1 track at 6 channels, while "-ac:a:0 2" correctly yields stereo.
     private static void AddPerTrackAudio(List<string> args, EncodingProfile profile, MediaProbeInfo source)
     {
         var cap = ChannelCap(profile);
@@ -183,7 +187,7 @@ internal static class FfmpegCommandBuilder
             args.Add(N(profile.AudioBitrateKbps) + "k");
             if (cap.HasValue && stream.Channels > cap.Value)
             {
-                args.Add("-ac:" + idx);
+                args.Add("-ac:a:" + idx);
                 args.Add(N(cap.Value));
             }
         }

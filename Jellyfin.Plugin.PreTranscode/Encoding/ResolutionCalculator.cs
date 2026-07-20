@@ -23,7 +23,7 @@ internal static class ResolutionCalculator
                     return null;
                 }
 
-                return "scale=" + N(profile.MaxWidth) + ":-2";
+                return "scale=" + N(Even(profile.MaxWidth)) + ":-2";
 
             case ResolutionMode.CapHeight:
                 if (profile.MaxHeight <= 0 || source.Height <= profile.MaxHeight)
@@ -31,7 +31,7 @@ internal static class ResolutionCalculator
                     return null;
                 }
 
-                return "scale=-2:" + N(profile.MaxHeight);
+                return "scale=-2:" + N(Even(profile.MaxHeight));
 
             case ResolutionMode.CapLongestEdge:
                 if (profile.MaxWidth <= 0)
@@ -41,10 +41,10 @@ internal static class ResolutionCalculator
 
                 if (source.Width >= source.Height)
                 {
-                    return source.Width > profile.MaxWidth ? "scale=" + N(profile.MaxWidth) + ":-2" : null;
+                    return source.Width > profile.MaxWidth ? "scale=" + N(Even(profile.MaxWidth)) + ":-2" : null;
                 }
 
-                return source.Height > profile.MaxWidth ? "scale=-2:" + N(profile.MaxWidth) : null;
+                return source.Height > profile.MaxWidth ? "scale=-2:" + N(Even(profile.MaxWidth)) : null;
 
             case ResolutionMode.UsePreset:
                 var preset = presets.FirstOrDefault(p => string.Equals(p.Id, profile.ResolutionPresetId, StringComparison.Ordinal));
@@ -59,6 +59,14 @@ internal static class ResolutionCalculator
             default:
                 return null;
         }
+    }
+
+    // Rounds a capped edge down to the nearest even value (minimum 2). The fixed edge of a "scale=W:-2"
+    // filter is emitted verbatim, and yuv420p (4:2:0) output requires even dimensions — an odd cap like
+    // MaxWidth=1281 would otherwise make ffmpeg abort with "width not divisible by 2".
+    private static int Even(int value)
+    {
+        return Math.Max(2, value - (value % 2));
     }
 
     private static string N(int value)

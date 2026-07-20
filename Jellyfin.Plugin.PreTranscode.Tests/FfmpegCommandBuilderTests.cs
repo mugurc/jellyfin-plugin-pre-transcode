@@ -108,6 +108,19 @@ public class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void OddResolutionCap_RoundedDownToEven()
+    {
+        // yuv420p (4:2:0) output requires even dimensions. An odd cap must be rounded down to even,
+        // otherwise ffmpeg aborts the whole encode with "width not divisible by 2".
+        var p = BaseProfile();
+        p.ResolutionMode = ResolutionMode.CapWidth;
+        p.MaxWidth = 1281;
+        var cmd = Build(p, Source(1920, 1080));
+        Assert.Contains("-vf scale=1280:-2", cmd);
+        Assert.DoesNotContain("scale=1281", cmd);
+    }
+
+    [Fact]
     public void CopyVideo_EmitsCopy_NoQuality()
     {
         var p = BaseProfile();
@@ -245,9 +258,12 @@ public class FfmpegCommandBuilderTests
         };
         var cmd = Build(p, s);
         Assert.Contains("-c:a:0 aac", cmd);
-        Assert.Contains("-ac:0 2", cmd);
+        // Must carry the audio type qualifier (-ac:a:0). A bare -ac:0 targets output stream 0 (the
+        // video) and is silently ignored by ffmpeg, so the downmix would never apply.
+        Assert.Contains("-ac:a:0 2", cmd);
+        Assert.DoesNotContain("-ac:0", cmd);
         Assert.Contains("-c:a:1 copy", cmd);
-        Assert.DoesNotContain("-ac:1", cmd);
+        Assert.DoesNotContain("-ac:a:1", cmd);
     }
 
     [Fact]
