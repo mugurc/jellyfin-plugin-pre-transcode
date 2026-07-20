@@ -86,6 +86,21 @@ public class RuleEvaluatorTests
         Assert.True(RuleEvaluator.EvaluateCondition(Cond(ConditionType.VideoBitrateKbps, ComparisonOperator.NotExists), info));
     }
 
+    [Theory]
+    [InlineData(ComparisonOperator.NotIn, "")]
+    [InlineData(ComparisonOperator.NotIn, "abc")]
+    [InlineData(ComparisonOperator.In, "")]
+    [InlineData(ComparisonOperator.In, "abc")]
+    public void NumericCondition_InOrNotIn_EmptyOrUnparseableValue_NeverMatches(ComparisonOperator op, string value)
+    {
+        // A half-configured In/NotIn (operator chosen, no valid numbers typed) must not act as a filter.
+        // Before the guard a numeric NotIn against an empty/unparseable value matched every file that had
+        // the field, queueing the whole library. VideoHeight is present (1080) here — the field is known,
+        // only the condition's value is missing — so this is distinct from the unknown-field guard above.
+        var info = Info(height: 1080);
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.VideoHeight, op, value), info));
+    }
+
     [Fact]
     public void BooleanCondition_HdrExists()
     {

@@ -121,12 +121,20 @@ internal static class RuleEvaluator
             return false;
         }
 
-        switch (condition.Operator)
+        if (condition.Operator is ComparisonOperator.In or ComparisonOperator.NotIn)
         {
-            case ComparisonOperator.In:
-                return SplitNumbers(condition.Value).Any(v => NearlyEqual(v, actual));
-            case ComparisonOperator.NotIn:
-                return !SplitNumbers(condition.Value).Any(v => NearlyEqual(v, actual));
+            // An In/NotIn with no valid numbers is an unfinished/invalid condition, not a filter. Without
+            // this guard a numeric NotIn against an empty or unparseable value returns true for every file
+            // that has the field (SplitNumbers yields nothing, so !Any() is always true), matching the
+            // whole library. The string path guards the same case at the top of EvaluateString.
+            var candidates = SplitNumbers(condition.Value).ToList();
+            if (candidates.Count == 0)
+            {
+                return false;
+            }
+
+            var inList = candidates.Any(v => NearlyEqual(v, actual));
+            return condition.Operator == ComparisonOperator.In ? inList : !inList;
         }
 
         if (!TryParse(condition.Value, out var target))
