@@ -115,6 +115,14 @@ internal static class ProcessRunner
                 displayArguments,
                 timeoutMilliseconds));
         }
+        catch (OperationCanceledException)
+        {
+            // The caller's own token was cancelled (plugin shutdown / task abort). Kill the child too so
+            // ffprobe/ffmpeg is not left running with no one enforcing its timeout; repeated cancellations
+            // would otherwise accumulate orphaned processes.
+            TryKill(process);
+            throw;
+        }
 
         lock (syncLock)
         {
