@@ -27,6 +27,17 @@
                 </div>
             </div>
             <div class="verticalSection">
+                <h3 class="sectionTitle" style="margin-bottom:0.2em;">Transcode a single item</h3>
+                <p class="fieldDescription">Search for a movie or episode and queue just that one, on demand &mdash; independent of the trigger rules and the automatic sweep. It is still skipped at run time if already compliant with the chosen profile.</p>
+                <div class="flex align-items-center" style="gap:0.6em;flex-wrap:wrap;margin:0.4em 0;">
+                    <input is="emby-input" type="text" id="singleSearch" placeholder="Movie or episode name&hellip;" style="min-width:18em;" />
+                    <select is="emby-select" id="singleProfile" style="min-width:16em;"></select>
+                    <button is="emby-button" type="button" id="btnSingleSearch" class="raised"><span>Search</span></button>
+                </div>
+                <div id="singleResults"></div>
+                <p class="fieldDescription" id="singleMsg" style="display:none;"></p>
+            </div>
+            <div class="verticalSection">
                 <table style="width:100%;border-collapse:collapse;" id="jobsTable">
                     <thead>
                         <tr style="text-align:left;border-bottom:1px solid rgba(128,128,128,.4);">
@@ -49,8 +60,10 @@
         var timer = null;
         var lastSig = null;
 
-        function api(method, path) {
-            return ApiClient.ajax({ type: method, url: ApiClient.getUrl('PreTranscode/' + path), dataType: method === 'GET' ? 'json' : undefined });
+        function api(method, path, body) {
+            var opts = { type: method, url: ApiClient.getUrl('PreTranscode/' + path), dataType: method === 'GET' ? 'json' : undefined };
+            if (body !== undefined) { opts.data = JSON.stringify(body); opts.contentType = 'application/json'; }
+            return ApiClient.ajax(opts);
         }
 
         function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
@@ -108,8 +121,13 @@
 
             // Skip the rebuild when nothing visible changed, so an open ffmpeg-log panel and any text
             // selection inside it survive the 2s poll instead of being destroyed and recreated.
-            var sig = JSON.stringify([paused ? 1 : 0, jobs.map(function (j) {
-                return [j.Id, j.Status, Math.round(j.Progress || 0), j.StatusDetail, j.ErrorMessage, j.LogExcerpt, j.OutputPath];
+            // While any job is actively processing, refresh every poll so the progress bar, elapsed time
+            // and ETA keep ticking. Keying only on the whole-number percent froze the entire row on a slow
+            // (e.g. 4K) encode, where progress moves less than 1% between polls. When nothing is processing
+            // the signature is stable again, so an open ffmpeg-log panel and text selection are preserved.
+            var anyProcessing = jobs.some(function (j) { return j.Status === 'Processing'; });
+            var sig = JSON.stringify([paused ? 1 : 0, anyProcessing ? Date.now() : 0, jobs.map(function (j) {
+                return [j.Id, j.Status, j.Progress || 0, j.StatusDetail, j.ErrorMessage, j.LogExcerpt, j.OutputPath];
             })]);
             if (sig === lastSig) { return; }
             lastSig = sig;
@@ -139,11 +157,12 @@
                 var itemCell = '<td style="padding:0.4em;"><div>' + esc(name) + '</div><div class="fieldDescription">' + esc(job.SourcePath) + '</div>' + err + log + '</td>';
                 var statusCell = '<td style="padding:0.4em;">' + esc(job.Status) + detail + '</td>';
 
-                var pct = Math.round(job.Progress || 0);
+                var pct = job.Progress || 0;
                 var bar = '';
                 if (job.Status === 'Processing') {
                     var barColor = paused ? '#888' : '#00a4dc';
-                    var pctLabel = paused ? (pct + '% · paused') : (pct + '%');
+                    var pctText = pct.toFixed(1);
+                    var pctLabel = paused ? (pctText + '% · paused') : (pctText + '%');
                     bar = '<div style="background:rgba(128,128,128,.25);border-radius:4px;overflow:hidden;height:1.1em;">'
                         + '<div style="background:' + barColor + ';height:100%;width:' + pct + '%;"></div></div><div class="fieldDescription">' + pctLabel + '</div>';
                 } else if (job.Status === 'Completed') {
@@ -185,6 +204,80 @@
             });
         }
 
+        function showSingleMsg(text) {
+            var el = document.getElementById('singleMsg');
+            el.textContent = text;
+            el.style.display = text ? '' : 'none';
+        }
+
+        function loadProfiles() {
+            return api('GET', 'Profiles').then(function (data) {
+                var sel = document.getElementById('singleProfile');
+                sel.innerHTML = '';
+                var profiles = (data && data.Profiles) || [];
+                profiles.forEach(function (p) {
+                    var opt = document.createElement('option');
+                    opt.value = p.Id;
+                    opt.textContent = p.Name;
+                    if (p.Id === (data && data.DefaultProfileId)) { opt.selected = true; }
+                    sel.appendChild(opt);
+                });
+                if (!profiles.length) {
+                    var opt = document.createElement('option');
+                    opt.value = '';
+                    opt.textContent = '(no profiles configured)';
+                    sel.appendChild(opt);
+                }
+            });
+        }
+
+        function queueItem(it, btn) {
+            btn.disabled = true;
+            var profileId = document.getElementById('singleProfile').value || '';
+            api('POST', 'Jobs/Item', { ItemId: it.Id, ProfileId: profileId }).then(function () {
+                showSingleMsg('Queued: ' + it.Name);
+                load();
+            }, function () {
+                showSingleMsg('Could not queue "' + it.Name + '" — it may already be queued, or its file has moved.');
+                btn.disabled = false;
+            });
+        }
+
+        function renderResults(items) {
+            var host = document.getElementById('singleResults');
+            host.innerHTML = '';
+            if (!items || !items.length) { host.innerHTML = '<p class="fieldDescription">No matches.</p>'; return; }
+            items.forEach(function (it) {
+                var row = document.createElement('div');
+                row.className = 'flex align-items-center';
+                row.style.cssText = 'gap:0.6em;padding:0.35em 0;border-bottom:1px solid rgba(128,128,128,.15);';
+                row.innerHTML = '<div style="flex:1;min-width:0;"><div>' + esc(it.Name)
+                    + ' <span class="fieldDescription">(' + esc(it.Type) + ')</span></div>'
+                    + '<div class="fieldDescription" style="word-break:break-all;">' + esc(it.Path) + '</div></div>';
+                var btn = document.createElement('button');
+                btn.setAttribute('is', 'emby-button');
+                btn.type = 'button';
+                btn.className = 'raised';
+                btn.style.cssText = 'padding:0.2em 0.7em;';
+                btn.innerHTML = '<span>Queue</span>';
+                btn.addEventListener('click', function () { queueItem(it, btn); });
+                row.appendChild(btn);
+                host.appendChild(row);
+            });
+        }
+
+        function searchSingle() {
+            var q = (document.getElementById('singleSearch').value || '').trim();
+            showSingleMsg('');
+            if (!q) { renderResults([]); return; }
+            api('GET', 'Library/Search?query=' + encodeURIComponent(q) + '&limit=25').then(function (items) {
+                renderResults(items || []);
+            }, function () { showSingleMsg('Search failed.'); });
+        }
+
+        page.querySelector('#btnSingleSearch').addEventListener('click', searchSingle);
+        page.querySelector('#singleSearch').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); searchSingle(); } });
+
         page.querySelector('#lnkSettings').addEventListener('click', function (e) { e.preventDefault(); Dashboard.navigate('configurationpage?name=Pre-Transcode'); });
         page.querySelector('#btnSweep').addEventListener('click', function () { api('POST', 'Sweep').then(function () { setTimeout(load, 1000); }); });
         page.querySelector('#btnPause').addEventListener('click', function () { api('POST', 'Queue/Pause').then(load); });
@@ -197,7 +290,7 @@
         page.querySelector('#btnClear').addEventListener('click', function () { api('POST', 'Jobs/ClearFinished').then(load); });
         page.querySelector('#btnRefresh').addEventListener('click', load);
 
-        page.addEventListener('pageshow', function () { if (timer) { clearInterval(timer); } load(); timer = setInterval(load, 2000); });
+        page.addEventListener('pageshow', function () { if (timer) { clearInterval(timer); } loadProfiles(); load(); timer = setInterval(load, 2000); });
         page.addEventListener('pagehide', function () { if (timer) { clearInterval(timer); timer = null; } });
     })();
     </script>
