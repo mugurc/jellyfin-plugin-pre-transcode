@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,6 +21,20 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
     private readonly ILogger<QueueProcessor> _logger;
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _active = new();
     private readonly ConcurrentDictionary<string, Process> _activeProcesses = new();
+
+    // Tracks which running encodes are currently OS-suspended, guarded by _suspendLock and kept in step
+    // with _activeProcesses. A process must be suspended at most once: on Windows NtSuspendProcess
+    // increments a per-thread suspend count, so a double-suspend needs two resumes — a single Resume()
+    // would then leave the encode frozen forever. This set makes Pause()/Resume() and the start-time
+    // suspend idempotent.
+    private readonly HashSet<string> _suspended = new();
+    private readonly object _suspendLock = new();
+
+    // Ids of jobs cancelled in the narrow window after they were claimed (marked Processing) but before
+    // StartJob registered their CTS in _active. StartJob drains this the moment it registers, so a cancel
+    // that lands in that window is honoured instead of silently reported as succeeded while the encode
+    // runs to completion.
+    private readonly ConcurrentDictionary<string, byte> _cancelRequested = new();
 
     private CancellationTokenSource? _stopCts;
     private Task? _loop;
@@ -69,17 +84,21 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
     {
         if (_active.TryGetValue(id, out var cts))
         {
-            try
+            TryCancel(cts);
+            return true;
+        }
+
+        // The job may have just been claimed (marked Processing) but not yet registered in _active.
+        // JobQueue.Cancel only cancels a still-Pending job, so without this a cancel landing in that
+        // window would report success yet let the encode run to completion. Record the request so
+        // StartJob cancels it the instant it registers, and re-check _active in case it registered
+        // between the lookup above and here.
+        if (_queue.Get(id)?.Status == JobStatus.Processing)
+        {
+            _cancelRequested[id] = 0;
+            if (_active.TryGetValue(id, out var late))
             {
-#pragma warning disable CA1849 // synchronous Cancel is intentional: CancelJob is a synchronous API
-                cts.Cancel();
-#pragma warning restore CA1849
-            }
-            catch (ObjectDisposedException)
-            {
-                // The job finished and its CTS was disposed between the lookup and the cancel; it is
-                // already effectively cancelled. Never let this escape — CancelAll iterates jobs and
-                // one racing completion must not abort cancelling the rest.
+                TryCancel(late);
             }
 
             return true;
@@ -88,22 +107,55 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
         return _queue.Cancel(id);
     }
 
+    private static void TryCancel(CancellationTokenSource cts)
+    {
+        try
+        {
+#pragma warning disable CA1849 // synchronous Cancel is intentional: the caller is a synchronous API
+            cts.Cancel();
+#pragma warning restore CA1849
+        }
+        catch (ObjectDisposedException)
+        {
+            // The job finished and its CTS was disposed between the lookup and the cancel; it is already
+            // effectively cancelled. Never let this escape — CancelAll iterates jobs and one racing
+            // completion must not abort cancelling the rest.
+        }
+    }
+
     public void Pause()
     {
-        // Stop claiming new jobs first, then freeze whatever is already running.
+        // Stop claiming new jobs first, then freeze whatever is already running. _suspended.Add gates each
+        // suspend so pressing Pause twice (or racing StartJob's start-time suspend) cannot double-suspend a
+        // process and leave it frozen after a single Resume.
         _queue.IsPaused = true;
-        foreach (var process in _activeProcesses.Values)
+        lock (_suspendLock)
         {
-            ProcessSuspender.Suspend(process);
+            foreach (var (id, process) in _activeProcesses)
+            {
+                if (_suspended.Add(id))
+                {
+                    ProcessSuspender.Suspend(process);
+                }
+            }
         }
     }
 
     public void Resume()
     {
-        // Unfreeze running encodes before allowing new ones to be claimed.
-        foreach (var process in _activeProcesses.Values)
+        // Unfreeze running encodes before allowing new ones to be claimed. Only resume what we actually
+        // suspended, exactly once each, then clear the set.
+        lock (_suspendLock)
         {
-            ProcessSuspender.Resume(process);
+            foreach (var id in _suspended)
+            {
+                if (_activeProcesses.TryGetValue(id, out var process))
+                {
+                    ProcessSuspender.Resume(process);
+                }
+            }
+
+            _suspended.Clear();
         }
 
         _queue.IsPaused = false;
@@ -170,6 +222,13 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
     {
         var jobCts = CancellationTokenSource.CreateLinkedTokenSource(stopToken);
         _active[job.Id] = jobCts;
+
+        // Honour a cancel that arrived while this job was claimed but not yet registered above.
+        if (_cancelRequested.TryRemove(job.Id, out _))
+        {
+            TryCancel(jobCts);
+        }
+
         Interlocked.Increment(ref _inFlight);
 
         _ = Task.Run(
@@ -186,10 +245,14 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
 
                             // Close the race where the queue was paused between claiming this job and the
                             // encode actually starting: suspend the fresh process immediately if we are
-                            // already paused, so nothing slips through and runs unpaused.
-                            if (_queue.IsPaused)
+                            // already paused, so nothing slips through and runs unpaused. _suspended.Add
+                            // gates it so this can never double-suspend with a concurrent Pause().
+                            lock (_suspendLock)
                             {
-                                ProcessSuspender.Suspend(process);
+                                if (_queue.IsPaused && _suspended.Add(job.Id))
+                                {
+                                    ProcessSuspender.Suspend(process);
+                                }
                             }
                         }).ConfigureAwait(false);
                 }
@@ -201,6 +264,12 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
                 {
                     Interlocked.Decrement(ref _inFlight);
                     _activeProcesses.TryRemove(job.Id, out _);
+                    _cancelRequested.TryRemove(job.Id, out _);
+                    lock (_suspendLock)
+                    {
+                        _suspended.Remove(job.Id);
+                    }
+
                     if (_active.TryRemove(job.Id, out var removed))
                     {
                         removed.Dispose();
