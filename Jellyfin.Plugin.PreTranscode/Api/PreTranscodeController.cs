@@ -1,13 +1,19 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.Globalization;
 using System.Linq;
 using System.Net.Mime;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Data.Enums;
+using Jellyfin.Plugin.PreTranscode.Configuration;
 using Jellyfin.Plugin.PreTranscode.Ffmpeg;
 using Jellyfin.Plugin.PreTranscode.Jobs;
 using Jellyfin.Plugin.PreTranscode.Library;
+using MediaBrowser.Controller.Entities;
+using MediaBrowser.Controller.Entities.TV;
+using MediaBrowser.Controller.Library;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -29,6 +35,7 @@ public class PreTranscodeController : ControllerBase
     private readonly IJobQueue _queue;
     private readonly IQueueController _queueController;
     private readonly ItemEvaluator _evaluator;
+    private readonly ILibraryManager _libraryManager;
     private readonly ILogger<PreTranscodeController> _logger;
 
     /// <summary>
@@ -38,18 +45,21 @@ public class PreTranscodeController : ControllerBase
     /// <param name="queue">The job queue.</param>
     /// <param name="queueController">The runtime queue controller.</param>
     /// <param name="evaluator">The library item evaluator.</param>
+    /// <param name="libraryManager">The Jellyfin library manager (for single-item search/enqueue).</param>
     /// <param name="logger">The logger.</param>
     public PreTranscodeController(
         IFfmpegCapabilitiesService capabilities,
         IJobQueue queue,
         IQueueController queueController,
         ItemEvaluator evaluator,
+        ILibraryManager libraryManager,
         ILogger<PreTranscodeController> logger)
     {
         _capabilities = capabilities;
         _queue = queue;
         _queueController = queueController;
         _evaluator = evaluator;
+        _libraryManager = libraryManager;
         _logger = logger;
     }
 
@@ -177,6 +187,149 @@ public class PreTranscodeController : ControllerBase
         };
 
         return _queue.Enqueue(job) ? Ok(job) : Conflict("An active job already exists for this file.");
+    }
+
+    /// <summary>
+    /// Searches the library for movies and episodes matching a name, for the manual single-item panel.
+    /// </summary>
+    /// <param name="query">The search text (movie or episode name).</param>
+    /// <param name="limit">Maximum results to return (clamped to 1-100).</param>
+    /// <returns>The matching items.</returns>
+    [HttpGet("Library/Search")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<IReadOnlyList<LibraryItemResult>> SearchLibrary([FromQuery] string? query, [FromQuery] int limit = 25)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return Ok(Array.Empty<LibraryItemResult>());
+        }
+
+        var items = _libraryManager.GetItemList(new InternalItemsQuery
+        {
+            SearchTerm = query,
+            IncludeItemTypes = new[] { BaseItemKind.Movie, BaseItemKind.Episode },
+            MediaTypes = new[] { MediaType.Video },
+            IsVirtualItem = false,
+            Recursive = true,
+            Limit = Math.Clamp(limit, 1, 100)
+        });
+
+        var results = items
+            .Where(i => !string.IsNullOrEmpty(i.Path))
+            .Select(i => new LibraryItemResult
+            {
+                Id = i.Id.ToString("N"),
+                Name = FriendlyName(i),
+                Type = i is Episode ? "Episode" : "Movie",
+                Path = i.Path
+            })
+            .ToList();
+
+        return Ok(results);
+    }
+
+    /// <summary>
+    /// Lists the configured encoding profiles (id and name) plus the default, for the profile picker.
+    /// </summary>
+    /// <returns>The profiles and the default profile id.</returns>
+    [HttpGet("Profiles")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<object> GetProfiles()
+    {
+        var config = Plugin.Instance?.Configuration;
+        var profiles = (config?.Profiles ?? new List<EncodingProfile>())
+            .Select(p => new { p.Id, p.Name })
+            .ToList();
+
+        return Ok(new
+        {
+            DefaultProfileId = config?.DefaultProfileId ?? string.Empty,
+            Profiles = profiles
+        });
+    }
+
+    /// <summary>
+    /// Manually enqueues a single library item (movie or episode) by its Jellyfin id. The job still
+    /// skips at execution time if the item is already compliant with the chosen profile.
+    /// </summary>
+    /// <param name="request">The enqueue-by-item request.</param>
+    /// <returns>The created job, 404 if the item/file is missing, or 409 if already queued.</returns>
+    [HttpPost("Jobs/Item")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public ActionResult<TranscodeJob> EnqueueItem([FromBody] EnqueueItemRequest request)
+    {
+        if (!Guid.TryParse(request.ItemId, out var guid))
+        {
+            return BadRequest("A valid ItemId is required.");
+        }
+
+        var item = _libraryManager.GetItemById(guid);
+        if (item is null || string.IsNullOrEmpty(item.Path))
+        {
+            return NotFound("Item not found.");
+        }
+
+        // item.Path is the library item's own path from the Jellyfin database, resolved by a parsed GUID
+        // — not a caller-supplied path — so this existence check cannot be steered by request input.
+#pragma warning disable CA3003
+        if (!System.IO.File.Exists(item.Path))
+#pragma warning restore CA3003
+        {
+            return NotFound("The item's file is missing on disk.");
+        }
+
+        var job = new TranscodeJob
+        {
+            SourcePath = item.Path,
+            ProfileId = request.ProfileId,
+            ItemId = item.Id.ToString("N"),
+            DisplayName = FriendlyName(item),
+            CreatedUtc = DateTime.UtcNow
+        };
+
+        if (!_queue.Enqueue(job))
+        {
+            return Conflict("An active job already exists for this item.");
+        }
+
+        _logger.LogInformation("Manually queued single item {Name} ({Path})", job.DisplayName, job.SourcePath);
+        return Ok(job);
+    }
+
+    // Builds a human-friendly label: "Series - S01E02 - Title" for an episode, "Title (Year)" for a
+    // movie, falling back to the file name when metadata is missing.
+    private static string FriendlyName(BaseItem item)
+    {
+        if (item is Episode episode)
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrEmpty(episode.SeriesName))
+            {
+                parts.Add(episode.SeriesName);
+            }
+
+            if (episode.ParentIndexNumber is int season && episode.IndexNumber is int number)
+            {
+                parts.Add(string.Format(CultureInfo.InvariantCulture, "S{0:D2}E{1:D2}", season, number));
+            }
+
+            if (!string.IsNullOrEmpty(item.Name))
+            {
+                parts.Add(item.Name);
+            }
+
+            return parts.Count > 0 ? string.Join(" - ", parts) : System.IO.Path.GetFileName(item.Path);
+        }
+
+        var title = item.Name ?? string.Empty;
+        if (item.ProductionYear is int year && year > 0)
+        {
+            title += " (" + year.ToString(CultureInfo.InvariantCulture) + ")";
+        }
+
+        return string.IsNullOrEmpty(title) ? System.IO.Path.GetFileName(item.Path) : title;
     }
 
     /// <summary>
