@@ -152,7 +152,7 @@ internal sealed class MediaProber : IMediaProber
             foreach (var stream in streams.EnumerateArray())
             {
                 var type = GetString(stream, "codec_type");
-                if (!videoFound && string.Equals(type, "video", StringComparison.Ordinal))
+                if (!videoFound && string.Equals(type, "video", StringComparison.Ordinal) && !IsAttachedPic(stream))
                 {
                     videoFound = true;
                     info.VideoCodec = GetString(stream, "codec_name");
@@ -205,6 +205,18 @@ internal sealed class MediaProber : IMediaProber
         }
 
         return info;
+    }
+
+    // Embedded cover art (common in mp4/mov, and often the first stream) is reported by ffprobe as a
+    // "video" stream with disposition.attached_pic=1. Treating it as the real video makes every decision
+    // (codec, dimensions, HDR) reflect the poster thumbnail, so it must be skipped.
+    private static bool IsAttachedPic(JsonElement stream)
+    {
+        return stream.TryGetProperty("disposition", out var disposition)
+            && disposition.ValueKind == JsonValueKind.Object
+            && disposition.TryGetProperty("attached_pic", out var attached)
+            && attached.ValueKind == JsonValueKind.Number
+            && attached.GetInt32() == 1;
     }
 
     private static bool DetectHdr(JsonElement stream)

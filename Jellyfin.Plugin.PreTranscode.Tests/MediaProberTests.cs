@@ -32,6 +32,26 @@ public class MediaProberTests
         ]
     }";
 
+    // An mp4 whose first "video" stream is embedded cover art (disposition.attached_pic=1) followed by
+    // the real H.264 video. The parser must ignore the cover and describe the real video.
+    private const string CoverArtJson = @"{
+        ""format"": { ""format_name"": ""mov,mp4,m4a,3gp,3g2,mj2"", ""duration"": ""3.0"" },
+        ""streams"": [
+            { ""codec_type"": ""video"", ""codec_name"": ""mjpeg"", ""width"": 600, ""height"": 600, ""disposition"": { ""attached_pic"": 1 } },
+            { ""codec_type"": ""video"", ""codec_name"": ""h264"", ""width"": 1920, ""height"": 1080, ""bit_rate"": ""5000000"", ""r_frame_rate"": ""25/1"" },
+            { ""codec_type"": ""audio"", ""codec_name"": ""aac"", ""channels"": 2 }
+        ]
+    }";
+
+    [Fact]
+    public void AttachedPicCoverArt_IsNotMistakenForTheVideoStream()
+    {
+        var info = MediaProber.Parse(CoverArtJson, "/media/a.mp4");
+        Assert.Equal("h264", info.VideoCodec);
+        Assert.Equal(1920, info.Width);
+        Assert.Equal(1080, info.Height);
+    }
+
     [Fact]
     public void VideoBitrate_NotInflatedByTotal_WhenPerStreamMissingAndOtherStreamsExist()
     {
