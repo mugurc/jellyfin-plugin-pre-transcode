@@ -54,17 +54,14 @@ internal sealed class AlternateVersionMerger : IDisposable
     /// <returns>A task.</returns>
     public async Task TryMergeAsync(string sourcePath, string outputPath, CancellationToken cancellationToken)
     {
-        await _mergeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_libraryManager.FindByPath(sourcePath, false) is not Video primary)
-            {
-                _logger.LogWarning("Auto-merge skipped: source {Path} is not a known Jellyfin video item", sourcePath);
-                return;
-            }
-
-            var alternate = await WaitForOutputItemAsync(outputPath, cancellationToken).ConfigureAwait(false);
-            if (alternate is null)
+            // Wait for the freshly-written output to be indexed BEFORE taking the merge lock. Holding the
+            // single lock across this up-to-5-minute poll would serialize every completed episode behind
+            // one slow index — a large overnight backlog of parked, uncancellable tasks each stalling the
+            // next. Only the DB link write below needs to run strictly one at a time.
+            var indexed = await WaitForOutputItemAsync(outputPath, cancellationToken).ConfigureAwait(false);
+            if (indexed is null)
             {
                 _logger.LogWarning(
                     "Auto-merge skipped: transcoded output {Path} did not appear as a library item within {Timeout}; it can still be merged manually",
@@ -73,23 +70,44 @@ internal sealed class AlternateVersionMerger : IDisposable
                 return;
             }
 
-            if (alternate.Id.Equals(primary.Id))
+            await _mergeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
             {
-                // Jellyfin already treats them as one item (e.g. matching version filenames).
-                return;
+                if (_libraryManager.FindByPath(sourcePath, false) is not Video primary)
+                {
+                    _logger.LogWarning("Auto-merge skipped: source {Path} is not a known Jellyfin video item", sourcePath);
+                    return;
+                }
+
+                // Re-resolve the output under the lock — it may have been re-indexed or removed between the
+                // poll and acquiring the lock.
+                if (_libraryManager.FindByPath(outputPath, false) is not Video alternate)
+                {
+                    return;
+                }
+
+                if (alternate.Id.Equals(primary.Id))
+                {
+                    // Jellyfin already treats them as one item (e.g. matching version filenames).
+                    return;
+                }
+
+                // Re-fetch the canonical, cached instances by id. FindByPath materialises fresh detached
+                // copies; mutating those races the copy the scanner holds. GetItemById returns the shared
+                // instance, so the merge writes to the same object subsequent saves see.
+                primary = _libraryManager.GetItemById(primary.Id) as Video ?? primary;
+                alternate = _libraryManager.GetItemById(alternate.Id) as Video ?? alternate;
+
+                MergeInto(primary, alternate);
+                await alternate.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
+                await primary.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
+
+                _logger.LogInformation("Registered {Output} as an alternate version of {Source}", outputPath, sourcePath);
             }
-
-            // Re-fetch the canonical, cached instances by id. FindByPath materialises fresh detached
-            // copies; mutating those races the copy the scanner holds. GetItemById returns the shared
-            // instance, so the merge writes to the same object subsequent saves see.
-            primary = _libraryManager.GetItemById(primary.Id) as Video ?? primary;
-            alternate = _libraryManager.GetItemById(alternate.Id) as Video ?? alternate;
-
-            MergeInto(primary, alternate);
-            await alternate.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
-            await primary.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
-
-            _logger.LogInformation("Registered {Output} as an alternate version of {Source}", outputPath, sourcePath);
+            finally
+            {
+                _mergeLock.Release();
+            }
         }
         catch (OperationCanceledException)
         {
@@ -98,10 +116,6 @@ internal sealed class AlternateVersionMerger : IDisposable
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Auto-merge of alternate version failed for {Output}", outputPath);
-        }
-        finally
-        {
-            _mergeLock.Release();
         }
     }
 
