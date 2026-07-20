@@ -7,7 +7,7 @@
     ./build-plugin.ps1 -Version 0.1.0.0
 #>
 param(
-    [string]$Version = "0.5.5.0"
+    [string]$Version = "0.6.0.0"
 )
 
 $ErrorActionPreference = "Stop"

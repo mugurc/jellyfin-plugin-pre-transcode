@@ -1,7 +1,7 @@
 ---
 name: "Pre-Transcode"
 guid: "8da245f6-7244-449b-9f32-46043f34b5f0"
-version: "0.5.5.0"
+version: "0.6.0.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "Pre-transcode media to an admin-defined compatibility baseline."
@@ -16,16 +16,9 @@ owner: "mugurc"
 artifacts:
 - "Jellyfin.Plugin.PreTranscode.dll"
 changelog: >
-  0.5.5.0 - A broad correctness, safety and performance release from a full code audit. Audio: the channel
-  cap now actually downmixes (e.g. 5.1 to stereo) &mdash; it was silently ignored, which under replace-in-place
-  also re-transcoded the file endlessly. Subtitles: mp4/mov outputs keep their text subtitles (as mov_text)
-  instead of dropping them, and webm drops only the image subtitles it cannot store rather than failing the
-  encode. Resolution: an odd cap (e.g. 1281) no longer aborts the encode. Encoders: VAAPI/VideoToolbox no
-  longer receive a -preset they reject. Data safety: paths are compared case-sensitively off Windows so
-  replace-in-place cannot overwrite an unrelated same-name file, and sibling/separate-directory outputs are
-  written crash-safely. Rules and library: a half-configured rule no longer matches the whole library, files
-  with no audio or an empty-container profile are no longer re-transcoded every sweep, embedded cover art is
-  no longer mistaken for the video stream, and the sweep survives a bad item. Queue: pausing can no longer
-  leave an encode permanently frozen, a just-started job's cancel is no longer lost, and ffmpeg is killed on
-  cancel or shutdown; the encoder-preset cache is now thread-safe and a large library import no longer does
-  O(n^2) work. Also: tighter Dolby Vision detection and UTF-8 decoding of ffmpeg output.
+  0.6.0.0 - Adds on-demand single-item pre-transcoding. From the Queue &amp; status page there is now a
+  "Transcode a single item" panel: search for a movie or episode by name, pick an encoding profile, and
+  queue just that one &mdash; independent of the trigger rules and the automatic sweep (it is still skipped
+  at run time if the item is already compliant with the chosen profile). Also fixes the queue list appearing
+  frozen during a slow (e.g. 4K) encode: the progress bar, elapsed time and estimated time remaining now keep
+  updating while a job runs, instead of only redrawing when the whole-number percent changed.
