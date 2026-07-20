@@ -76,7 +76,7 @@ internal static class FfmpegCommandBuilder
             args.Add("-c:v");
             args.Add(profile.VideoEncoder);
 
-            if (!string.IsNullOrWhiteSpace(profile.Preset))
+            if (!string.IsNullOrWhiteSpace(profile.Preset) && EncoderAcceptsPreset(profile.VideoEncoder))
             {
                 args.Add("-preset");
                 args.Add(profile.Preset.Trim());
@@ -281,6 +281,15 @@ internal static class FfmpegCommandBuilder
             args.Add("-bufsize");
             args.Add(N(profile.VideoMaxBitrateKbps * 2) + "k");
         }
+    }
+
+    // The VAAPI and VideoToolbox encoders have no -preset option and abort if given one (they use
+    // -compression_level / -q:v instead). nvenc, qsv, amf and the software encoders (libx264/x265/svtav1)
+    // all accept -preset — verified against the bundled ffmpeg for nvenc/qsv/amf — so only the two
+    // preset-less families are excluded.
+    private static bool EncoderAcceptsPreset(string encoder)
+    {
+        return !Has(encoder, "vaapi") && !Has(encoder, "videotoolbox");
     }
 
     // The constant-quality flag is encoder-specific; there is no universal ffmpeg option.

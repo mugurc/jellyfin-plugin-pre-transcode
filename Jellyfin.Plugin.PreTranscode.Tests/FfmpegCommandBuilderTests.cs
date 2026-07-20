@@ -98,6 +98,20 @@ public class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void VaapiEncoder_OmitsPreset()
+    {
+        // h264_vaapi/hevc_vaapi (and videotoolbox) have no -preset option and abort if given one. nvenc,
+        // qsv, amf and software encoders keep it.
+        var p = BaseProfile();
+        p.VideoEncoder = "h264_vaapi";
+        p.Preset = "medium";
+        Assert.DoesNotContain("-preset", Build(p, Source()));
+
+        p.VideoEncoder = "h264_nvenc";
+        Assert.Contains("-preset medium", Build(p, Source()));
+    }
+
+    [Fact]
     public void CapHeight_AddsScaleFilter_OnlyWhenExceeding()
     {
         var p = BaseProfile();
