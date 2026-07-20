@@ -169,7 +169,7 @@ internal static class OutputApplier
         var stem = Path.GetFileNameWithoutExtension(sourcePath);
         var finalPath = MakeUnique(Path.Combine(directory, stem + " - " + SanitizeLabel(label) + extension));
 
-        File.Move(tempOutputPath, finalPath);
+        MoveIntoPlace(tempOutputPath, finalPath);
         return finalPath;
     }
 
@@ -196,8 +196,32 @@ internal static class OutputApplier
         var stem = Path.GetFileNameWithoutExtension(sourcePath);
         var finalPath = MakeUnique(Path.Combine(directory, stem + extension));
 
-        File.Move(tempOutputPath, finalPath);
+        MoveIntoPlace(tempOutputPath, finalPath);
         return finalPath;
+    }
+
+    // Moves a finished temp output to its final path crash-safely. The temp dir is usually on a different
+    // mount from the media (the norm under Docker), so File.Move there is a non-atomic copy+delete: a
+    // crash mid-copy would leave a half-written file at the final, library-visible name. Copying to a
+    // hidden scratch on the destination volume first (matches Jellyfin's "**/.*" ignore glob, so a partial
+    // scratch is never indexed) and only then renaming it into place — a same-volume atomic operation —
+    // means the final name only ever appears complete.
+    private static void MoveIntoPlace(string tempOutputPath, string finalPath)
+    {
+        var directory = Path.GetDirectoryName(finalPath) ?? ".";
+        var scratchPath = Path.Combine(
+            directory,
+            ".pretranscode-tmp-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture) + Path.GetExtension(finalPath));
+        try
+        {
+            File.Move(tempOutputPath, scratchPath);
+            File.Move(scratchPath, finalPath);
+        }
+        catch
+        {
+            TryDelete(scratchPath);
+            throw;
+        }
     }
 
     private static string MakeUnique(string path)
