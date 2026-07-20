@@ -83,6 +83,15 @@ internal static class RuleEvaluator
             return false;
         }
 
+        // An unknown/absent actual value cannot be meaningfully compared with a value operator; only
+        // Exists/NotExists can test its presence. Mirrors the numeric guard (actual <= 0) so that, for
+        // example, "AudioCodec NotEquals aac" does not match a file that simply has no audio track.
+        if (string.IsNullOrEmpty(actual)
+            && condition.Operator is not (ComparisonOperator.Exists or ComparisonOperator.NotExists))
+        {
+            return false;
+        }
+
         switch (condition.Operator)
         {
             case ComparisonOperator.Equals:
@@ -156,6 +165,15 @@ internal static class RuleEvaluator
 
     private static bool EvaluateBool(bool actual, RuleCondition condition)
     {
+        // A half-configured condition (operator chosen, value not yet typed) must not act as a filter:
+        // ParseBool("") is false, so without this "IsHdr Equals <blank>" would silently match every SDR
+        // file. Only the presence operators are meaningful without a value.
+        if (string.IsNullOrWhiteSpace(condition.Value)
+            && condition.Operator is ComparisonOperator.Equals or ComparisonOperator.NotEquals)
+        {
+            return false;
+        }
+
         switch (condition.Operator)
         {
             case ComparisonOperator.Exists:

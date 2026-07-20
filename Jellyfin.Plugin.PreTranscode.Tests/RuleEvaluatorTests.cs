@@ -102,6 +102,29 @@ public class RuleEvaluatorTests
     }
 
     [Fact]
+    public void StringCondition_UnknownActual_ValueOperatorsNeverMatch()
+    {
+        // A file whose field is absent (e.g. no audio/video codec probed) must not satisfy a value
+        // comparison; only Exists/NotExists can test its presence. Before the guard "VideoCodec NotEquals
+        // h264" matched a file whose codec came back empty, queueing it.
+        var info = Info(videoCodec: string.Empty);
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.VideoCodec, ComparisonOperator.NotEquals, "h264"), info));
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.VideoCodec, ComparisonOperator.NotIn, "h264,hevc"), info));
+        Assert.True(RuleEvaluator.EvaluateCondition(Cond(ConditionType.VideoCodec, ComparisonOperator.NotExists), info));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void BooleanCondition_EmptyValue_NeverMatches(bool hdr)
+    {
+        // A half-configured boolean condition (operator chosen, value not typed) must not act as a filter.
+        var info = Info(hdr: hdr);
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.IsHdr, ComparisonOperator.Equals, string.Empty), info));
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.IsHdr, ComparisonOperator.NotEquals, string.Empty), info));
+    }
+
+    [Fact]
     public void BooleanCondition_HdrExists()
     {
         Assert.True(RuleEvaluator.EvaluateCondition(Cond(ConditionType.IsHdr, ComparisonOperator.Exists), Info(hdr: true)));
