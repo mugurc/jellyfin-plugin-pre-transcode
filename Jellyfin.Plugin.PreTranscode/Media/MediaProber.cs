@@ -228,8 +228,11 @@ internal sealed class MediaProber : IMediaProber
 
     private static bool DetectDolbyVision(JsonElement stream)
     {
-        var tag = GetString(stream, "codec_tag_string");
-        if (tag.StartsWith("dv", StringComparison.OrdinalIgnoreCase))
+        // Match the exact Dolby Vision codec tags only. A "dv" prefix also matches legacy DV (Digital
+        // Video: dvsd, dvhd, dv25, dv50, dvc …), which is not Dolby Vision and would be wrongly routed
+        // into DV-specific handling.
+        var tag = GetString(stream, "codec_tag_string").ToLowerInvariant();
+        if (tag is "dvhe" or "dvh1" or "dvav" or "dva1")
         {
             return true;
         }

@@ -28,7 +28,12 @@ internal static class FfmpegExecutor
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
-            CreateNoWindow = true
+            CreateNoWindow = true,
+
+            // ffmpeg emits UTF-8 on its progress/stderr pipes; decode as such so a non-ASCII path in the
+            // captured error tail is not mangled by the host's OEM code page on Windows.
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+            StandardErrorEncoding = System.Text.Encoding.UTF8
         };
 
         startInfo.ArgumentList.Add("-nostdin");

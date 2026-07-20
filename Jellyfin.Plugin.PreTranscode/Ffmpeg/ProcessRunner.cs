@@ -34,6 +34,11 @@ internal static class ProcessRunner
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
+
+            // ffprobe/ffmpeg emit UTF-8; decode as such rather than the host's OEM code page (which
+            // mangles non-ASCII metadata on Windows).
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+            StandardErrorEncoding = System.Text.Encoding.UTF8,
         };
 
         return RunAsync(startInfo, arguments, timeoutMilliseconds, cancellationToken);
@@ -58,6 +63,8 @@ internal static class ProcessRunner
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true,
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+            StandardErrorEncoding = System.Text.Encoding.UTF8,
         };
 
         foreach (var argument in arguments)
