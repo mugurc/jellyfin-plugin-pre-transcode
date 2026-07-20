@@ -93,7 +93,10 @@ internal static class ProfileComplianceChecker
             return info.AudioStreams.Any(s => !Same(s.Codec, profile.AudioCodec));
         }
 
-        return !Same(info.AudioCodec, profile.AudioCodec);
+        // A source with no audio at all is already compliant on this dimension: the encoder cannot add a
+        // track, so re-transcoding would never make the (absent) audio codec match — flagging it forever
+        // and re-transcoding a silent file on every sweep. Only a KNOWN codec that differs is work.
+        return !string.IsNullOrEmpty(info.AudioCodec) && !Same(info.AudioCodec, profile.AudioCodec);
     }
 
     private static bool ExceedsChannels(EncodingProfile profile, MediaProbeInfo info)
@@ -127,6 +130,14 @@ internal static class ProfileComplianceChecker
 
     private static bool ContainerMatches(string sourceContainer, string targetContainer)
     {
+        sourceContainer ??= string.Empty;
+
+        // An empty target container means "let the builder decide", and the builder (MuxerFor) defaults
+        // an empty container to mp4. Comparing against "" literally never matched a real ffprobe
+        // format_name, so the encoder's own mp4 output was flagged non-compliant forever; and a null
+        // container would throw below. Normalise to the builder's default first.
+        targetContainer = string.IsNullOrWhiteSpace(targetContainer) ? "mp4" : targetContainer;
+
         if (Same(sourceContainer, targetContainer))
         {
             return true;

@@ -55,6 +55,24 @@ public class ProfileComplianceCheckerTests
     }
 
     [Fact]
+    public void NoAudioSource_IsCompliant_OnAudioDimension()
+    {
+        // A source with no audio track cannot be given one by transcoding, so it must not be flagged
+        // non-compliant on the audio codec forever — which re-transcoded a silent file on every sweep.
+        Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(Profile(), Info(ac: string.Empty), Presets));
+    }
+
+    [Fact]
+    public void EmptyProfileContainer_TreatedAsMp4()
+    {
+        // The builder muxes an empty container as mp4; the checker must agree so the encoder's own mp4
+        // output is not reported non-compliant forever.
+        var p = Profile();
+        p.Container = string.Empty;
+        Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(p, Info(container: "mov,mp4,m4a,3gp,3g2,mj2"), Presets));
+    }
+
+    [Fact]
     public void ResolutionOverCap_NeedsWork()
     {
         var p = Profile();
