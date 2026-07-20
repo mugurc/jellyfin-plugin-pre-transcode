@@ -26,6 +26,10 @@ internal sealed class JobQueue : IJobQueue
     private readonly object _sync = new();
     private readonly List<TranscodeJob> _jobs = new();
 
+    // Written from API threads (Pause/Resume) and read from the queue loop and the start-time suspend
+    // callback without taking _sync; volatile gives those lock-free reads a fresh value promptly.
+    private volatile bool _isPaused;
+
     public JobQueue(IApplicationPaths applicationPaths, ILogger<JobQueue> logger)
     {
         _logger = logger;
@@ -35,7 +39,11 @@ internal sealed class JobQueue : IJobQueue
         Load();
     }
 
-    public bool IsPaused { get; set; }
+    public bool IsPaused
+    {
+        get => _isPaused;
+        set => _isPaused = value;
+    }
 
     public IReadOnlyList<TranscodeJob> GetJobs()
     {

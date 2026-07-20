@@ -113,6 +113,11 @@ internal sealed class AlternateVersionMerger : IDisposable
         {
             throw;
         }
+        catch (ObjectDisposedException)
+        {
+            // The plugin is shutting down and the merge lock was disposed under an in-flight detached
+            // merge (these run on CancellationToken.None and can outlive a stop). Nothing to do.
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Auto-merge of alternate version failed for {Output}", outputPath);

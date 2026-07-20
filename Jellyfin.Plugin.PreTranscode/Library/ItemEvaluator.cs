@@ -88,9 +88,23 @@ public sealed class ItemEvaluator
             for (var i = 0; i < items.Count; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (await EvaluateAndEnqueueAsync(items[i], cancellationToken, knownJobs).ConfigureAwait(false))
+
+                // Guard each item so one unexpected failure (an odd path, a transient library error) skips
+                // just that item instead of aborting the sweep and leaving every later item unevaluated.
+                try
                 {
-                    enqueued++;
+                    if (await EvaluateAndEnqueueAsync(items[i], cancellationToken, knownJobs).ConfigureAwait(false))
+                    {
+                        enqueued++;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Skipping {Path}: evaluation failed", items[i]?.Path);
                 }
 
                 progress?.Report((i + 1) * 100.0 / Math.Max(1, items.Count));
@@ -197,8 +211,10 @@ public sealed class ItemEvaluator
             var age = DateTime.UtcNow - File.GetLastWriteTimeUtc(path);
             return age.TotalSeconds >= stabilitySeconds;
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
+            // Treat an unreadable/odd path as "not settled yet" and skip it, rather than letting the
+            // exception escape and abort the whole sweep loop. (IOException alone missed these siblings.)
             return false;
         }
     }
