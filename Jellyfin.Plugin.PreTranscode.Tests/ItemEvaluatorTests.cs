@@ -69,6 +69,23 @@ public class ItemEvaluatorTests
     }
 
     [Fact]
+    public void AlreadyHandled_TrueWhenSkippedKeptOriginalStillExists()
+    {
+        // DiscardOutputIfLarger records the kept original as the job's output. That source is handled and
+        // must not be re-queued and re-transcoded on every sweep just to discard a larger result again.
+        var jobs = new[] { Job("/a.mkv", "p1", JobStatus.Skipped, "/a.mkv") };
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => true, 3));
+    }
+
+    [Fact]
+    public void AlreadyHandled_FalseWhenSkippedWithoutRecordedOutput()
+    {
+        // An "already compliant" skip records no output path, so it must not block a future re-evaluation.
+        var jobs = new[] { Job("/a.mkv", "p1", JobStatus.Skipped) };
+        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => true, 3));
+    }
+
+    [Fact]
     public void AlreadyHandled_FalseForDifferentProfileOrSource()
     {
         var jobs = new[]

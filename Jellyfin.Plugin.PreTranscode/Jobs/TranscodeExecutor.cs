@@ -151,6 +151,25 @@ internal sealed class TranscodeExecutor
                 return;
             }
 
+            // Optional space-guard: if the finished transcode is not actually smaller than the source, the
+            // re-encode reclaimed nothing (a more efficient codec can still produce a bigger file on some
+            // content), so throw the output away and keep the original untouched. OutputPath is set to the
+            // source — the file that is being kept — so the idempotency check treats this source as handled
+            // and does not re-transcode it on every sweep just to discard the result again.
+            if (profile.DiscardOutputIfLarger && OutputIsNotSmaller(job.SourcePath, tempFile, out var sourceBytes, out var outputBytes))
+            {
+                job.Status = JobStatus.Skipped;
+                job.StatusDetail = FormattableString.Invariant(
+                    $"kept original — transcode was not smaller ({outputBytes / (1024d * 1024d):F0} MB vs {sourceBytes / (1024d * 1024d):F0} MB source)");
+                job.OutputPath = job.SourcePath;
+                job.Progress = 100;
+                job.FinishedUtc = DateTime.UtcNow;
+                _queue.Update(job);
+                TryDelete(tempFile);
+                _logger.LogInformation("Kept original for {Path}: output {OutputBytes} B not smaller than source {SourceBytes} B", job.SourcePath, outputBytes, sourceBytes);
+                return;
+            }
+
             var finalPath = OutputApplier.Apply(profile, job.SourcePath, tempFile);
 
             job.Status = JobStatus.Completed;
@@ -207,6 +226,26 @@ internal sealed class TranscodeExecutor
         job.FinishedUtc = DateTime.UtcNow;
         _queue.Update(job);
         _logger.LogWarning("Job failed for {Path}: {Message}", job.SourcePath, message);
+    }
+
+    // True when the produced output is at least as large as the source (i.e. re-encoding saved nothing).
+    // Only reports true when both sizes are positively readable; if either file cannot be measured the
+    // guard is skipped and the verified transcode is kept, rather than silently discarding good work.
+    private static bool OutputIsNotSmaller(string sourcePath, string outputPath, out long sourceBytes, out long outputBytes)
+    {
+        sourceBytes = 0;
+        outputBytes = 0;
+        try
+        {
+            sourceBytes = new FileInfo(sourcePath).Length;
+            outputBytes = new FileInfo(outputPath).Length;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        return sourceBytes > 0 && outputBytes >= sourceBytes;
     }
 
     private void TryDelete(string path)

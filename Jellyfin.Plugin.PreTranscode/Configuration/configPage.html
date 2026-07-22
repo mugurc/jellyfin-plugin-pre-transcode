@@ -363,6 +363,7 @@
                 labelRow.style.display = (m === 'AddAsAlternateVersion') ? '' : 'none';
             }
             om.select.addEventListener('change', syncOutput); syncOutput();
+            host.appendChild(labeledCheckbox('pDiscardOutputIfLarger', 'Keep original if the transcode is not smaller', p.DiscardOutputIfLarger, 'After a successful encode, if the new file is not smaller than the source, throw it away and keep the original untouched. Useful when re-encoding to a more efficient codec that occasionally produces a bigger file.'));
 
             // ---------------- ADVANCED (collapsed) ----------------
             host.appendChild(el('details', { style: 'margin-top:1.4em;padding-top:0.9em;border-top:1px solid rgba(128,128,128,.22);' }, [
@@ -393,7 +394,7 @@
             p.AudioBitrateKbps = num('pAudioBitrateKbps'); p.ChannelPolicy = val('pChannelPolicy'); p.MaxAudioChannels = num('pMaxAudioChannels');
             p.TonemapHdr = chk('pTonemapHdr'); p.TonemapAlgorithm = val('pTonemapAlgorithm'); p.Container = val('pContainer');
             p.OutputMode = val('pOutputMode'); p.OutputDirectory = val('pOutputDirectory');
-            p.AlternateVersionLabel = val('pAlternateVersionLabel');
+            p.AlternateVersionLabel = val('pAlternateVersionLabel'); p.DiscardOutputIfLarger = chk('pDiscardOutputIfLarger');
             p.ExtraVideoArgs = val('pExtraVideoArgs'); p.ExtraOutputArgs = val('pExtraOutputArgs');
         }
 
@@ -591,7 +592,7 @@
             state._editing = sel.value; renderProfileEditor();
         });
         page.querySelector('#btnAddProfile').addEventListener('click', function () {
-            var p = { Id: guid(), Name: 'New profile', VideoCodec: 'h264', VideoEncoder: 'libx264', VideoQualityMode: 'Crf', Crf: 21, VideoBitrateKbps: 6000, VideoMaxBitrateKbps: 0, Preset: 'medium', ExtraVideoArgs: '', ResolutionMode: 'Unchanged', MaxWidth: 0, MaxHeight: 0, ResolutionPresetId: '', AudioCodec: 'aac', AudioEncoder: 'aac', AudioBitrateKbps: 256, ChannelPolicy: 'Unchanged', MaxAudioChannels: 2, TonemapHdr: false, TonemapAlgorithm: 'hable', Container: 'mp4', OutputMode: 'SeparateDirectory', OutputDirectory: '', AlternateVersionLabel: 'Pre-Transcode', ExtraOutputArgs: '' };
+            var p = { Id: guid(), Name: 'New profile', VideoCodec: 'h264', VideoEncoder: 'libx264', VideoQualityMode: 'Crf', Crf: 21, VideoBitrateKbps: 6000, VideoMaxBitrateKbps: 0, Preset: 'medium', ExtraVideoArgs: '', ResolutionMode: 'Unchanged', MaxWidth: 0, MaxHeight: 0, ResolutionPresetId: '', AudioCodec: 'aac', AudioEncoder: 'aac', AudioBitrateKbps: 256, ChannelPolicy: 'Unchanged', MaxAudioChannels: 2, TonemapHdr: false, TonemapAlgorithm: 'hable', Container: 'mp4', OutputMode: 'SeparateDirectory', OutputDirectory: '', AlternateVersionLabel: 'Pre-Transcode', DiscardOutputIfLarger: false, ExtraOutputArgs: '' };
             state.config.Profiles.push(p); fillProfileSelectors(); document.getElementById('ProfileSelector').value = p.Id; state._editing = p.Id; renderProfileEditor();
         });
         page.querySelector('#btnDeleteProfile').addEventListener('click', function () {

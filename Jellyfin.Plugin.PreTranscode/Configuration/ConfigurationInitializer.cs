@@ -212,6 +212,7 @@ internal static class ConfigurationInitializer
         Field(sb, ((int)p.OutputMode).ToString(CultureInfo.InvariantCulture));
         Field(sb, p.OutputDirectory);
         Field(sb, p.AlternateVersionLabel);
+        Field(sb, p.DiscardOutputIfLarger ? "1" : "0");
         Field(sb, p.ExtraOutputArgs);
         return sb.ToString();
     }

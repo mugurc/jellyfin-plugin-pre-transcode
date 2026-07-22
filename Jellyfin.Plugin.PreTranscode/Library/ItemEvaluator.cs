@@ -230,8 +230,11 @@ public sealed class ItemEvaluator
     }
 
     // True when this source should not be auto-queued again for this profile: it either already has a
-    // completed transcode whose output still exists, or it has failed at least maxFailedAttempts times.
-    // Pure over the job list (outputExists is injected) so it is unit-testable.
+    // resolved transcode whose recorded output still exists, or it has failed at least maxFailedAttempts
+    // times. A Completed job records its produced output; a Skipped job records an existing file it stood
+    // down for — the pre-existing output it found, or (with DiscardOutputIfLarger) the original it kept
+    // because the transcode was not smaller. Either way the source is handled and must not be re-queued
+    // and re-transcoded on every sweep. Pure over the job list (outputExists is injected) so it is unit-testable.
     internal static bool AlreadyHandled(
         IEnumerable<TranscodeJob> jobs,
         string sourcePath,
@@ -248,7 +251,7 @@ public sealed class ItemEvaluator
                 continue;
             }
 
-            if (job.Status == JobStatus.Completed
+            if ((job.Status == JobStatus.Completed || job.Status == JobStatus.Skipped)
                 && !string.IsNullOrEmpty(job.OutputPath)
                 && outputExists(job.OutputPath))
             {

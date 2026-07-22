@@ -146,6 +146,14 @@ public class EncodingProfile
     public string AlternateVersionLabel { get; set; } = "Pre-Transcode";
 
     /// <summary>
+    /// Gets or sets a value indicating whether a finished output that is not smaller than the source is
+    /// thrown away, keeping the original untouched. Re-encoding to a more efficient codec still produces a
+    /// bigger file on some content; when this is set the transcode is discarded in that case instead of
+    /// replacing/accompanying the original with a larger file.
+    /// </summary>
+    public bool DiscardOutputIfLarger { get; set; }
+
+    /// <summary>
     /// Gets or sets additional raw ffmpeg output arguments applied to the whole command (advanced escape hatch).
     /// </summary>
     public string ExtraOutputArgs { get; set; } = string.Empty;
