@@ -9,6 +9,14 @@
     "imageUrl": "",
     "versions": [
       {
+        "version": "0.6.1.0",
+        "changelog": "Two requested features. Profiles gain a \"Keep original if the transcode is not smaller\" option: after an encode is verified, if the new file is not smaller than the source it is discarded and your original is kept untouched — useful when re-encoding to a more efficient codec that can still produce a bigger file on some content, with no manual per-file size comparison across the library. The source is then remembered as handled, so the automatic sweep does not re-encode it on every run. Also adds a new VideoDurationMinutes trigger-rule condition, so a file-size threshold can be scaled by video length instead of a single blanket size — e.g. \"duration under 30 min AND size over 350 MB\".",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases/download/v0.6.1.0/pre-transcode-0.6.1.0.zip",
+        "checksum": "5e4dcc43856985692c5ecfed90ae6f76",
+        "timestamp": "2026-07-22T15:05:07Z"
+      },
+      {
         "version": "0.6.0.0",
         "changelog": "Adds on-demand single-item pre-transcoding. From the Queue & status page there is now a \"Transcode a single item\" panel: search for a movie or episode by name, pick an encoding profile, and queue just that one — independent of the trigger rules and the automatic sweep (it is still skipped at run time if the item is already compliant). Also fixes the queue list appearing frozen during a slow (e.g. 4K) encode: the progress bar, elapsed time and estimated time remaining now keep updating while a job runs, instead of only redrawing when the whole-number percent changed.",
         "targetAbi": "10.11.0.0",
