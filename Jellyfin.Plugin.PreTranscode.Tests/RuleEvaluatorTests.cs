@@ -174,4 +174,47 @@ public class RuleEvaluatorTests
         Assert.True(RuleEvaluator.ShouldProcess(rules, Info(videoCodec: "h264", height: 2160)));
         Assert.False(RuleEvaluator.ShouldProcess(rules, Info(videoCodec: "h264", height: 720)));
     }
+
+    [Theory]
+    [InlineData(1500, ComparisonOperator.LessThan, "30", true)]    // 25 min < 30
+    [InlineData(2400, ComparisonOperator.LessThan, "30", false)]   // 40 min not < 30
+    [InlineData(7800, ComparisonOperator.GreaterThan, "120", true)] // 130 min > 120
+    [InlineData(3600, ComparisonOperator.GreaterThan, "120", false)] // 60 min not > 120
+    [InlineData(1800, ComparisonOperator.Equals, "30", true)]      // exactly 30 min
+    public void DurationCondition_ComparesInMinutes(double durationSeconds, ComparisonOperator op, string value, bool expected)
+    {
+        var info = new MediaProbeInfo { DurationSeconds = durationSeconds };
+        Assert.Equal(expected, RuleEvaluator.EvaluateCondition(Cond(ConditionType.VideoDurationMinutes, op, value), info));
+    }
+
+    [Fact]
+    public void DurationCondition_UnknownDuration_NeverMatchesThreshold()
+    {
+        // An unreadable/zero duration must not satisfy any threshold — mirrors the other numeric guards.
+        var info = new MediaProbeInfo { DurationSeconds = 0 };
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.VideoDurationMinutes, ComparisonOperator.LessThan, "30"), info));
+        Assert.True(RuleEvaluator.EvaluateCondition(Cond(ConditionType.VideoDurationMinutes, ComparisonOperator.NotExists), info));
+    }
+
+    [Fact]
+    public void DurationAndFileSize_CombineForLengthAwareTargeting()
+    {
+        // The scenario from the feature request: short clips over 350 MB should be targeted, so the file
+        // size threshold can be scaled by length instead of a single blanket size.
+        var rule = new TriggerRule
+        {
+            Enabled = true, Combine = ConditionCombine.All,
+            Conditions = new List<RuleCondition>
+            {
+                Cond(ConditionType.VideoDurationMinutes, ComparisonOperator.LessThan, "30"),
+                Cond(ConditionType.FileSizeMb, ComparisonOperator.GreaterThan, "350")
+            }
+        };
+        var shortAndBig = new MediaProbeInfo { DurationSeconds = 1200, FileSizeBytes = 400L * 1024 * 1024 };   // 20 min, 400 MB
+        var shortAndSmall = new MediaProbeInfo { DurationSeconds = 1200, FileSizeBytes = 200L * 1024 * 1024 }; // 20 min, 200 MB
+        var longAndBig = new MediaProbeInfo { DurationSeconds = 7200, FileSizeBytes = 400L * 1024 * 1024 };    // 120 min, 400 MB
+        Assert.True(RuleEvaluator.EvaluateRule(rule, shortAndBig));
+        Assert.False(RuleEvaluator.EvaluateRule(rule, shortAndSmall));
+        Assert.False(RuleEvaluator.EvaluateRule(rule, longAndBig));
+    }
 }

@@ -114,7 +114,10 @@ public enum ConditionType
     VideoFramerate,
 
     /// <summary>The source file size in megabytes.</summary>
-    FileSizeMb
+    FileSizeMb,
+
+    /// <summary>The video duration/length in minutes.</summary>
+    VideoDurationMinutes
 }
 
 /// <summary>

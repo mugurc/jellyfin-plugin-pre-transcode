@@ -60,6 +60,8 @@ internal static class RuleEvaluator
                 return EvaluateNumber(info.VideoFramerate, condition);
             case ConditionType.FileSizeMb:
                 return EvaluateNumber(info.FileSizeMb, condition);
+            case ConditionType.VideoDurationMinutes:
+                return EvaluateNumber(info.DurationSeconds / 60.0, condition);
             case ConditionType.IsHdr:
                 return EvaluateBool(info.IsHdr, condition);
             case ConditionType.IsDolbyVision:
