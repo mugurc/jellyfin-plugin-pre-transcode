@@ -9,6 +9,14 @@
     "imageUrl": "",
     "versions": [
       {
+        "version": "0.7.0.0",
+        "changelog": "Answers issue #4 with a debug switch, and fixes four defects that switch made visible. New \"Explain every decision in the log\" option (General): each item logs what ffprobe found, every trigger-rule condition with its configured value, the value it was compared against and whether it passed, and the reason anything was skipped - so a rule that does not fire can finally be diagnosed. Fixes: a matched rule is no longer silently vetoed by the compliance check, which never looked at file size or bitrate (profiles that re-encode material already in the target codec can now switch off \"Skip files already matching this profile\"); a profile that would write its output over its own source is refused instead of dropping \"Movie (1).mkv\" beside it and re-encoding that copy on every sweep; a 10-bit source keeps its bit depth when the chosen encoder supports it, and HDR is no longer forced to 8-bit while keeping its HDR tags; and duration-based rules no longer die silently on files whose container reports no format-level duration. Also: a non-media file fails with a clear message instead of a raw ffmpeg error, an alternate version Jellyfin already grouped by filename is no longer listed twice in the version picker, the paused state survives a restart, and the finished-job history can be capped.",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases/download/v0.7.0.0/pre-transcode-0.7.0.0.zip",
+        "checksum": "a5cf368c0cc0c8c86ec0286b20aa9ef5",
+        "timestamp": "2026-07-27T09:48:21Z"
+      },
+      {
         "version": "0.6.1.0",
         "changelog": "Two requested features. Profiles gain a \"Keep original if the transcode is not smaller\" option: after an encode is verified, if the new file is not smaller than the source it is discarded and your original is kept untouched — useful when re-encoding to a more efficient codec that can still produce a bigger file on some content, with no manual per-file size comparison across the library. The source is then remembered as handled, so the automatic sweep does not re-encode it on every run. Also adds a new VideoDurationMinutes trigger-rule condition, so a file-size threshold can be scaled by video length instead of a single blanket size — e.g. \"duration under 30 min AND size over 350 MB\".",
         "targetAbi": "10.11.0.0",
