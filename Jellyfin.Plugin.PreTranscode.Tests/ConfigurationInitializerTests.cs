@@ -114,6 +114,41 @@ public class ConfigurationInitializerTests
         Assert.Equal(2, config.Profiles.Count);
     }
 
+    // Every profile field has to be part of the dedupe signature, or two profiles that differ only in
+    // that field collapse into one and an admin silently loses the second. SkipIfAlreadyCompliant is
+    // exactly such a field: "shrink oversized H.265" and "convert to H.265" can otherwise be identical.
+    [Fact]
+    public void ProfilesDifferingOnlyBySkipIfAlreadyCompliant_AreNotCollapsed()
+    {
+        var config = new PluginConfiguration { DefaultsSeeded = true };
+        config.Profiles.Add(new EncodingProfile { Id = "a", Name = "HEVC", VideoCodec = "hevc", SkipIfAlreadyCompliant = true });
+        config.Profiles.Add(new EncodingProfile { Id = "b", Name = "HEVC", VideoCodec = "hevc", SkipIfAlreadyCompliant = false });
+
+        Assert.False(ConfigurationInitializer.Normalize(config));
+        Assert.Equal(2, config.Profiles.Count);
+    }
+
+    // A profile written by an older build has no <SkipIfAlreadyCompliant> element. XmlSerializer leaves
+    // such a property at its constructor default, so the compliance skip must stay ON for those configs —
+    // an upgrade that silently started re-transcoding a whole library would be far worse than the bug.
+    [Fact]
+    public void ProfileFromOlderConfig_KeepsComplianceSkipOn()
+    {
+        const string Xml = @"<?xml version=""1.0""?>
+<PluginConfiguration xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"">
+  <Profiles>
+    <EncodingProfile><Id>a</Id><Name>Old</Name><VideoCodec>h264</VideoCodec></EncodingProfile>
+  </Profiles>
+</PluginConfiguration>";
+
+        var serializer = new XmlSerializer(typeof(PluginConfiguration));
+        using var reader = new StringReader(Xml);
+        var config = (PluginConfiguration)serializer.Deserialize(reader)!;
+
+        Assert.True(config.Profiles[0].SkipIfAlreadyCompliant);
+        Assert.False(config.VerboseRuleLogging);
+    }
+
     // The end-to-end reproduction of the reported bug: the constructor must NOT pre-seed collections,
     // otherwise XmlSerializer appends the saved items to the seeded ones and they multiply on each load.
     [Fact]

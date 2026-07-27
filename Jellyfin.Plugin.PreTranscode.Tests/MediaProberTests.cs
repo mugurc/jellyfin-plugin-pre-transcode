@@ -43,6 +43,27 @@ public class MediaProberTests
         ]
     }";
 
+    // ffprobe omits format.duration for some inputs and reports it per stream instead. Duration 0 reads
+    // as "unknown" to the rule engine, which fails every VideoDurationMinutes condition for any operator,
+    // so a duration-driven rule set goes silently dead on these files unless the fallback picks it up.
+    private const string NoFormatDurationJson = @"{
+        ""format"": { ""format_name"": ""matroska,webm"", ""size"": ""1000000"" },
+        ""streams"": [
+            { ""codec_type"": ""video"", ""codec_name"": ""hevc"", ""width"": 1920, ""height"": 1080, ""duration"": ""7200.5"" },
+            { ""codec_type"": ""audio"", ""codec_name"": ""aac"", ""channels"": 2, ""duration"": ""3600.0"" }
+        ]
+    }";
+
+    // mkvmerge-written Matroska: no format duration, no per-stream duration either — only the DURATION
+    // tag, which is a timecode string rather than a number.
+    private const string DurationTagOnlyJson = @"{
+        ""format"": { ""format_name"": ""matroska,webm"", ""size"": ""1000000"" },
+        ""streams"": [
+            { ""codec_type"": ""video"", ""codec_name"": ""hevc"", ""width"": 1920, ""height"": 1080,
+              ""tags"": { ""DURATION"": ""02:00:00.123000000"" } }
+        ]
+    }";
+
     [Fact]
     public void AttachedPicCoverArt_IsNotMistakenForTheVideoStream()
     {
@@ -50,6 +71,69 @@ public class MediaProberTests
         Assert.Equal("h264", info.VideoCodec);
         Assert.Equal(1920, info.Width);
         Assert.Equal(1080, info.Height);
+    }
+
+    // Found by a live run against a non-media file: ffprobe exits 1 but still prints "{  }", which parses
+    // into a perfectly valid, perfectly empty MediaProbeInfo. Accepting that sent the file to the encoder,
+    // which failed with a raw AVERROR ("ffmpeg exited with code -1094995529") instead of the plugin
+    // reporting that it could not read the file.
+    [Theory]
+    [InlineData("{  }")]
+    [InlineData(@"{ ""streams"": [] }")]
+    [InlineData(@"{ ""format"": { } }")]
+    public void EmptyProbeResult_IsNotMedia(string json)
+    {
+        Assert.False(MediaProber.LooksLikeMedia(MediaProber.Parse(json, "/media/garbage.mkv")));
+    }
+
+    [Theory]
+    [InlineData(MkvJson)]
+    [InlineData(Mp4Json)]
+    [InlineData(CoverArtJson)]
+    public void RealProbeResult_IsMedia(string json)
+    {
+        Assert.True(MediaProber.LooksLikeMedia(MediaProber.Parse(json, "/media/a.mkv")));
+    }
+
+    // A container with no readable streams is still media — the check must not be so strict that it
+    // rejects a file the parser merely handled imperfectly.
+    [Fact]
+    public void ContainerAloneCountsAsMedia()
+    {
+        const string Json = @"{ ""format"": { ""format_name"": ""matroska,webm"" } }";
+        Assert.True(MediaProber.LooksLikeMedia(MediaProber.Parse(Json, "/media/a.mkv")));
+    }
+
+    [Fact]
+    public void Duration_FallsBackToTheLongestStream_WhenFormatOmitsIt()
+    {
+        var info = MediaProber.Parse(NoFormatDurationJson, "/media/a.mkv");
+        Assert.Equal(7200.5, info.DurationSeconds);
+    }
+
+    [Fact]
+    public void Duration_FallsBackToTheMatroskaDurationTag()
+    {
+        var info = MediaProber.Parse(DurationTagOnlyJson, "/media/a.mkv");
+        Assert.Equal(7200.123, info.DurationSeconds, 3);
+    }
+
+    [Fact]
+    public void Duration_PrefersTheFormatValueWhenPresent()
+    {
+        var info = MediaProber.Parse(MkvJson, "/media/a.mkv");
+        Assert.Equal(3.0, info.DurationSeconds);
+    }
+
+    [Theory]
+    [InlineData("02:00:00.123000000", 7200.123)]
+    [InlineData("00:41:03.5", 2463.5)]
+    [InlineData("", 0)]
+    [InlineData("not a timecode", 0)]
+    [InlineData("12:34", 0)]
+    public void ParseTimecode_HandlesTheMatroskaShapeAndRejectsTheRest(string input, double expected)
+    {
+        Assert.Equal(expected, MediaProber.ParseTimecode(input), 3);
     }
 
     [Fact]

@@ -61,6 +61,13 @@ public class MediaProbeInfo
     public string PixelFormat { get; set; } = string.Empty;
 
     /// <summary>
+    /// Gets or sets the video's bits per sample (8, 10, 12 …), or 0 when the probe could not determine
+    /// it. Drives the output pixel-format choice: re-encoding a 10-bit source as 8-bit throws away
+    /// precision, and doing so while keeping the source's HDR tags produces visible banding.
+    /// </summary>
+    public int BitDepth { get; set; }
+
+    /// <summary>
     /// Gets or sets a value indicating whether the video is HDR (HDR10/HLG/etc.).
     /// </summary>
     public bool IsHdr { get; set; }

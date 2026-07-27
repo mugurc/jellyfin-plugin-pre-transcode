@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.PreTranscode.Ffmpeg;
@@ -16,7 +17,7 @@ namespace Jellyfin.Plugin.PreTranscode.Media;
 /// <summary>
 /// Default <see cref="IMediaProber"/> that shells out to ffprobe (path from <see cref="IMediaEncoder.ProbePath"/>).
 /// </summary>
-internal sealed class MediaProber : IMediaProber
+internal sealed partial class MediaProber : IMediaProber
 {
     // Spawning ffprobe is by far the most expensive step, and the same unchanged file is probed
     // repeatedly: on every sweep, and again by the executor for a file the evaluator just probed. Cache
@@ -69,6 +70,17 @@ internal sealed class MediaProber : IMediaProber
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to parse ffprobe output for {Path}", path);
+            return null;
+        }
+
+        // ffprobe exits non-zero on a file that is not media, but with "-v quiet" it still prints an
+        // empty JSON object — which parses perfectly well into an all-default MediaProbeInfo. Reporting
+        // that as a successful probe sends a file with no streams all the way to the encoder, which then
+        // fails with a raw AVERROR the admin has to decode ("ffmpeg exited with code -1094995529").
+        // A probe that found no container and not a single stream did not find media.
+        if (!LooksLikeMedia(info))
+        {
+            _logger.LogWarning("ffprobe found no container or streams in {Path}; treating it as unreadable", path);
             return null;
         }
 
@@ -145,12 +157,15 @@ internal sealed class MediaProber : IMediaProber
 
         var videoFound = false;
         double videoStreamBitrate = 0;
+        double longestStreamDuration = 0;
         var audioStreams = new List<AudioStreamInfo>();
         var subtitleStreams = new List<SubtitleStreamInfo>();
         if (root.TryGetProperty("streams", out var streams) && streams.ValueKind == JsonValueKind.Array)
         {
             foreach (var stream in streams.EnumerateArray())
             {
+                longestStreamDuration = Math.Max(longestStreamDuration, StreamDuration(stream));
+
                 var type = GetString(stream, "codec_type");
                 if (!videoFound && string.Equals(type, "video", StringComparison.Ordinal) && !IsAttachedPic(stream))
                 {
@@ -159,6 +174,7 @@ internal sealed class MediaProber : IMediaProber
                     info.Width = (int)GetDouble(stream, "width");
                     info.Height = (int)GetDouble(stream, "height");
                     info.PixelFormat = GetString(stream, "pix_fmt");
+                    info.BitDepth = ReadBitDepth(stream, info.PixelFormat);
                     videoStreamBitrate = GetDouble(stream, "bit_rate");
                     info.VideoFramerate = ParseRate(GetString(stream, "r_frame_rate"));
                     info.IsHdr = DetectHdr(stream);
@@ -193,6 +209,16 @@ internal sealed class MediaProber : IMediaProber
             ? videoStreamBitrate
             : (audioStreams.Count == 0 && subtitleStreams.Count == 0 ? overallBitrate : 0)) / 1000d);
 
+        // Not every container carries a format-level duration: ffprobe omits it for raw/streamed inputs and
+        // for Matroska files muxed without a Segment duration, and reports it per stream (or only in the
+        // Matroska DURATION tag) instead. Duration 0 means "unknown" to the rule engine, which fails every
+        // VideoDurationMinutes condition regardless of operator — so a rule set built on duration would go
+        // silently dead on those files. Fall back to the longest stream.
+        if (info.DurationSeconds <= 0)
+        {
+            info.DurationSeconds = longestStreamDuration;
+        }
+
         info.AudioStreams = audioStreams;
         info.SubtitleStreams = subtitleStreams;
 
@@ -205,6 +231,97 @@ internal sealed class MediaProber : IMediaProber
         }
 
         return info;
+    }
+
+    // Whether a parsed probe describes actual media. Deliberately generous — any one of a container
+    // name, a video codec or a single audio/subtitle stream is enough — so this can only reject a result
+    // that carries no information at all, never a real file the parser handled imperfectly.
+    internal static bool LooksLikeMedia(MediaProbeInfo info)
+    {
+        return !string.IsNullOrEmpty(info.Container)
+            || !string.IsNullOrEmpty(info.VideoCodec)
+            || info.AudioStreams.Count > 0
+            || info.SubtitleStreams.Count > 0;
+    }
+
+    // Bits per sample. ffprobe reports bits_per_raw_sample for most video codecs; when it doesn't, the
+    // pixel format name carries the same information.
+    private static int ReadBitDepth(JsonElement stream, string pixelFormat)
+    {
+        var reported = (int)GetDouble(stream, "bits_per_raw_sample");
+        return reported > 0 ? reported : BitDepthFromPixelFormat(pixelFormat);
+    }
+
+    // "yuv420p10le" -> 10, "p010le" -> 10, "p216le" -> 16, "gbrp12le" -> 12, "yuv420p" -> 8, "nv12" -> 8.
+    //
+    // Anchored on the trailing endianness suffix that every ffmpeg pixel format above 8 bits carries, and
+    // on the plane marker 'p' that precedes the depth. A plain "contains a number" test would read
+    // "yuv410p" (a real 4:1:0 format) as 10-bit and "nv12" as 12-bit — both are 8-bit — and would then
+    // hand the encoder a depth the source never had. The optional digit between 'p' and the depth covers
+    // the semi-planar family, where the chroma layout is encoded there: p010le/p210le are both 10-bit
+    // (4:2:0 and 4:2:2), p216le is 16-bit. Anything unrecognised reads as 8-bit, the safe default.
+    internal static int BitDepthFromPixelFormat(string pixelFormat)
+    {
+        if (string.IsNullOrEmpty(pixelFormat))
+        {
+            return 0;
+        }
+
+        var match = PixelFormatDepthRegex().Match(pixelFormat);
+        return match.Success && int.TryParse(match.Groups["bits"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var bits)
+            ? bits
+            : 8;
+    }
+
+    [GeneratedRegex(@"p\d?(?<bits>\d{2})(le|be)$", RegexOptions.IgnoreCase)]
+    private static partial Regex PixelFormatDepthRegex();
+
+    // A single stream's duration: the numeric "duration" field when ffprobe supplies it, otherwise the
+    // Matroska "DURATION" tag, which is a timecode string ("01:59:59.123000000") rather than a number.
+    internal static double StreamDuration(JsonElement stream)
+    {
+        var seconds = GetDouble(stream, "duration");
+        if (seconds > 0)
+        {
+            return seconds;
+        }
+
+        if (!stream.TryGetProperty("tags", out var tags) || tags.ValueKind != JsonValueKind.Object)
+        {
+            return 0;
+        }
+
+        // Matroska tag names are case-preserving and muxers differ ("DURATION" from mkvmerge, "duration"
+        // from some others), so probe both spellings rather than assuming one.
+        var timecode = GetString(tags, "DURATION");
+        if (string.IsNullOrEmpty(timecode))
+        {
+            timecode = GetString(tags, "duration");
+        }
+
+        return ParseTimecode(timecode);
+    }
+
+    // "HH:MM:SS.fffffffff" -> seconds. Returns 0 for anything that is not that shape, so a malformed or
+    // absent tag reads as "unknown" exactly like a missing field.
+    internal static double ParseTimecode(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return 0;
+        }
+
+        var parts = value.Split(':');
+        if (parts.Length != 3
+            || !double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var hours)
+            || !double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var minutes)
+            || !double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds))
+        {
+            return 0;
+        }
+
+        var total = (hours * 3600) + (minutes * 60) + seconds;
+        return total > 0 ? total : 0;
     }
 
     // Embedded cover art (common in mp4/mov, and often the first stream) is reported by ffprobe as a

@@ -127,20 +127,53 @@ public sealed class ItemEvaluator
             return false;
         }
 
+        // Every exit below is a decision the admin cannot otherwise observe — the method just returns
+        // false, so a rule that never fires looks identical to a file the plugin never saw. With the flag
+        // on, each one says which check stood the item down and what it was comparing.
+        var verbose = config.VerboseRuleLogging;
+
         var path = item.Path;
         if (string.IsNullOrEmpty(path) || !File.Exists(path))
         {
+            Explain(verbose, path, "the library item has no existing file on disk");
             return false;
         }
 
         if (!IsStable(path, config.FileStabilitySeconds))
         {
+            Explain(verbose, path, FormattableString.Invariant(
+                $"the file was written less than {config.FileStabilitySeconds}s ago and is still settling (FileStabilitySeconds)"));
             return false;
         }
 
         var (profile, rules, enabled) = ResolveForLibrary(config, item);
-        if (!enabled || profile is null)
+        if (!enabled)
         {
+            Explain(verbose, path, "this item's library override is switched off");
+            return false;
+        }
+
+        if (profile is null)
+        {
+            Explain(verbose, path, "no encoding profile is configured");
+            return false;
+        }
+
+        // A "separate directory" profile can resolve its output to the source file itself: no output
+        // directory is set (so the output lands beside the source) and the profile's container maps to
+        // the extension the source already has. The applier cannot overwrite the source in this mode, so
+        // it falls back to a unique name and writes "Movie (1).mkv" next to it — which Jellyfin indexes
+        // as its own library item, the next sweep evaluates as a fresh source, and transcodes into
+        // "Movie (1) (1).mkv". One more re-encoded generation per sweep, forever. Warn (not just under
+        // verbose): this is a misconfiguration no admin can have intended, and the fix is theirs to make.
+        if (WritesOverItsOwnSource(profile, path))
+        {
+            _logger.LogWarning(
+                "Skipping {Path}: profile '{Profile}' writes its output to the source's own path. Choose "
+                + "'Replace in place', set an output directory, or pick a container different from the "
+                + "source's extension — otherwise each sweep would add another re-encoded '(1)' copy.",
+                path,
+                profile.Name);
             return false;
         }
 
@@ -150,25 +183,58 @@ public sealed class ItemEvaluator
         // on every daily sweep, piling up duplicate outputs. Skip when either (a) the expected output
         // for this profile already exists on disk (robust — survives clearing the queue), or (b) the
         // queue records a completed transcode for it, or it has failed too many times to keep retrying.
-        if (OutputAlreadyExists(profile, path)
-            || AlreadyHandled(knownJobs ?? _queue.GetJobs(), path, profile.Id, File.Exists, MaxAutoFailedAttempts))
+        if (OutputAlreadyExists(profile, path))
         {
+            Explain(verbose, path, FormattableString.Invariant(
+                $"this profile's output already exists at '{OutputApplier.ExpectedOutputPath(profile, path)}'"));
+            return false;
+        }
+
+        if (AlreadyHandled(knownJobs ?? _queue.GetJobs(), path, profile.Id, File.Exists, MaxAutoFailedAttempts))
+        {
+            Explain(verbose, path, FormattableString.Invariant(
+                $"the queue already records a finished transcode of this source for profile '{profile.Name}', or it has failed {MaxAutoFailedAttempts} times (requeue it manually from the queue page)"));
             return false;
         }
 
         var probe = await _prober.ProbeAsync(path, cancellationToken).ConfigureAwait(false);
         if (probe is null)
         {
+            Explain(verbose, path, "ffprobe could not read the file (see the preceding ffprobe warning)");
             return false;
         }
 
-        if (!RuleEvaluator.ShouldProcess(rules, probe))
+        var matched = RuleEvaluator.ShouldProcess(rules, probe);
+        if (verbose)
+        {
+            _logger.LogInformation(
+                "Pre-Transcode evaluation of {Path}:\n  {Media}\n{Rules}",
+                path,
+                RuleTrace.DescribeMedia(probe),
+                RuleTrace.DescribeRules(rules, probe));
+        }
+
+        if (!matched)
         {
             return false;
         }
 
-        if (ProfileComplianceChecker.IsAlreadyCompliant(profile, probe, config.ResolutionPresets))
+        // The rules said yes; this check can still say no. It compares only codec, container, resolution,
+        // audio codec/channels and HDR — it has no notion of file size or bitrate — so a profile whose
+        // whole purpose is to shrink material that ALREADY has the target codec would find every such
+        // file "compliant" and veto the rule that just matched. SkipIfAlreadyCompliant lets those
+        // profiles opt out; it stays on by default, which is what keeps ordinary sweeps idempotent.
+        if (ProfileComplianceChecker.ShouldSkipAsCompliant(profile, probe, config.ResolutionPresets))
         {
+            Explain(
+                verbose,
+                path,
+                "a rule matched, but the file is already compliant with the target profile, so transcoding "
+                + "it would change nothing this profile compares — "
+                + RuleTrace.DescribeCompliance(profile, probe, config.ResolutionPresets)
+                + ". Note that the compliance check ignores file size and bitrate; if this profile exists to "
+                + "re-encode material that already has the target codec, turn off 'Skip files already matching "
+                + "this profile' on it.");
             return false;
         }
 
@@ -192,8 +258,27 @@ public sealed class ItemEvaluator
         {
             _logger.LogInformation("Queued {Path} using profile {Profile}", path, profile.Name);
         }
+        else
+        {
+            // The queue admits one active job per SOURCE, not per source+profile. That is deliberate:
+            // two profiles encoding the same file at once would race, and with Replace-in-place one would
+            // delete the source out from under the other. So a second profile's job simply waits for the
+            // first to finish and is picked up by the next sweep — a delay, not a loss.
+            Explain(verbose, path, FormattableString.Invariant(
+                $"an active job already exists for this source (only one at a time, across all profiles); profile '{profile.Name}' will be re-evaluated on the next sweep"));
+        }
 
         return added;
+    }
+
+    // Information level, not Debug: the whole point is that an admin can switch this on from the plugin
+    // page and read the answer in the normal Jellyfin log, without lowering the server's global log level.
+    private void Explain(bool verbose, string? path, string reason)
+    {
+        if (verbose)
+        {
+            _logger.LogInformation("Pre-Transcode skipped {Path}: {Reason}", string.IsNullOrEmpty(path) ? "(item with no path)" : path, reason);
+        }
     }
 
     // A file is "stable" once its last-write time is at least stabilitySeconds in the past — a guard
@@ -225,8 +310,15 @@ public sealed class ItemEvaluator
     {
         var expected = OutputApplier.ExpectedOutputPath(profile, sourcePath);
         return expected is not null
-            && !string.Equals(expected, sourcePath, StringComparison.OrdinalIgnoreCase)
+            && !OutputApplier.IsSameFile(expected, sourcePath)
             && File.Exists(expected);
+    }
+
+    // Delegates to the single definition shared with the executor, which a manually-queued job reaches
+    // without ever passing through this evaluator.
+    internal static bool WritesOverItsOwnSource(EncodingProfile profile, string sourcePath)
+    {
+        return OutputApplier.WritesOverItsOwnSource(profile, sourcePath);
     }
 
     // True when this source should not be auto-queued again for this profile: it either already has a

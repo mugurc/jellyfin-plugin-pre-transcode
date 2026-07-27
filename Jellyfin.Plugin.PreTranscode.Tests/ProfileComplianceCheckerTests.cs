@@ -36,6 +36,55 @@ public class ProfileComplianceCheckerTests
     }
 
     [Fact]
+    public void ShouldSkipAsCompliant_SkipsByDefault()
+    {
+        Assert.True(ProfileComplianceChecker.ShouldSkipAsCompliant(Profile(), Info(), Presets));
+    }
+
+    // GitHub issue #4. The rule set was five rules of the form "video is HEVC AND duration in range AND
+    // file size over N" — a profile meant to re-encode oversized H.265 down to a smaller H.265. The rules
+    // matched, but the compliance check compares no size or bitrate dimension, so it declared every
+    // already-H.265 file compliant and silently vetoed all of them. The opt-out is what makes such a
+    // profile possible at all.
+    [Fact]
+    public void OversizedSourceInTheTargetCodec_IsVetoedUnlessTheProfileOptsOut()
+    {
+        var profile = new EncodingProfile
+        {
+            Name = "Shrink oversized H.265",
+            VideoCodec = "hevc", AudioCodec = "copy", Container = "matroska",
+            ResolutionMode = ResolutionMode.Unchanged, ChannelPolicy = AudioChannelPolicy.Unchanged
+        };
+        var oversized = new MediaProbeInfo
+        {
+            VideoCodec = "hevc", Container = "matroska,webm",
+            Width = 1920, Height = 1080,
+            DurationSeconds = 120 * 60,
+            FileSizeBytes = 4000L * 1024 * 1024
+        };
+
+        // The compliance check itself is unchanged: on the dimensions it compares, this file matches.
+        Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(profile, oversized, Presets));
+        Assert.True(ProfileComplianceChecker.ShouldSkipAsCompliant(profile, oversized, Presets));
+
+        profile.SkipIfAlreadyCompliant = false;
+        Assert.False(ProfileComplianceChecker.ShouldSkipAsCompliant(profile, oversized, Presets));
+    }
+
+    // Turning the skip off must not make the check itself lie — the executor still reports the reason,
+    // and a genuinely non-compliant file must stay non-compliant either way.
+    [Fact]
+    public void OptingOut_DoesNotAffectSourcesThatGenuinelyNeedWork()
+    {
+        var profile = Profile();
+        profile.SkipIfAlreadyCompliant = false;
+
+        Assert.False(ProfileComplianceChecker.ShouldSkipAsCompliant(profile, Info(vc: "hevc"), Presets));
+        Assert.True(ProfileComplianceChecker.NeedsWork(profile, Info(vc: "hevc"), Presets, out var reason));
+        Assert.Equal("video codec differs", reason);
+    }
+
+    [Fact]
     public void DifferentVideoCodec_NeedsWork()
     {
         Assert.False(ProfileComplianceChecker.IsAlreadyCompliant(Profile(), Info(vc: "hevc"), Presets));

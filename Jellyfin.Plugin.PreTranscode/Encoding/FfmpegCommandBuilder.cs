@@ -14,13 +14,24 @@ namespace Jellyfin.Plugin.PreTranscode.Encoding;
 /// </summary>
 internal static class FfmpegCommandBuilder
 {
+    // Codecs whose 10-bit profile is broadly supported by client hardware decoders, so keeping a 10-bit
+    // source at 10 bits does not cost playability. H.264 is deliberately absent: its High10 profile is
+    // not hardware-decodable on most clients, and playing everywhere is the entire point of
+    // pre-transcoding — an admin who wants it anyway can select KeepSourceBitDepth explicitly.
+    private static readonly string[] TenBitFriendlyCodecs = { "hevc", "h265", "av1", "vp9" };
+
+    // The 10-bit formats an encoder may accept, in preference order. Never assumed — a candidate is only
+    // used when the encoder's own "Supported pixel formats" list contains it.
+    private static readonly string[] TenBitCandidates = { "yuv420p10le", "p010le" };
+
     // Builds the ordered ffmpeg argument list (suitable for ProcessStartInfo.ArgumentList).
     public static IReadOnlyList<string> BuildArguments(
         EncodingProfile profile,
         MediaProbeInfo source,
         IReadOnlyList<ResolutionPreset> presets,
         string inputPath,
-        string outputPath)
+        string outputPath,
+        IReadOnlyList<string>? encoderPixelFormats = null)
     {
         // Restrict the input to local-file protocols. The source is always a verified local library file,
         // so this changes nothing for legitimate input, but it makes the "never fetch a remote URL / read
@@ -96,8 +107,14 @@ internal static class FfmpegCommandBuilder
                 filters.Add(scale);
             }
 
-            args.Add("-pix_fmt");
-            args.Add("yuv420p");
+            // Emitted before ExtraVideoArgs so an admin can still override it outright.
+            var pixelFormat = ChoosePixelFormat(profile, source, encoderPixelFormats);
+            if (pixelFormat is not null)
+            {
+                args.Add("-pix_fmt");
+                args.Add(pixelFormat);
+            }
+
             AddRaw(args, profile.ExtraVideoArgs);
         }
 
@@ -159,6 +176,65 @@ internal static class FfmpegCommandBuilder
 
         args.Add(outputPath);
         return args;
+    }
+
+    /// <summary>
+    /// The pixel format to force on the re-encoded video, or <c>null</c> to let ffmpeg negotiate it.
+    /// </summary>
+    /// <param name="profile">The target profile.</param>
+    /// <param name="source">The probed source.</param>
+    /// <param name="encoderPixelFormats">
+    /// The formats the chosen encoder advertises (from <c>ffmpeg -h encoder=…</c>). An empty or absent
+    /// list means "unknown", and the safe 8-bit default is used rather than a guess.
+    /// </param>
+    /// <returns>The pixel format, or <c>null</c>.</returns>
+    internal static string? ChoosePixelFormat(
+        EncodingProfile profile,
+        MediaProbeInfo source,
+        IReadOnlyList<string>? encoderPixelFormats)
+    {
+        // Tone-mapping converts HDR to SDR and its filter chain already ends in yuv420p; the result is
+        // 8-bit Rec.709 by construction, so anything else here would contradict the filter.
+        if (profile.TonemapHdr && source.IsHdr)
+        {
+            return "yuv420p";
+        }
+
+        if (profile.PixelFormatMode == PixelFormatMode.ForceYuv420p)
+        {
+            return "yuv420p";
+        }
+
+        // BitDepth 0 means the probe could not tell; treat that as 8-bit rather than speculatively
+        // asking the encoder for a depth the source may not have.
+        if (source.BitDepth <= 8)
+        {
+            return "yuv420p";
+        }
+
+        var keep = profile.PixelFormatMode == PixelFormatMode.KeepSourceBitDepth
+            // Auto keeps the depth for codecs whose 10-bit profile clients can actually decode, and
+            // always for an HDR source that is NOT being tone-mapped: forcing that to 8 bits while its
+            // HDR transfer tags survive is the one outcome that is never correct (banding).
+            || (profile.PixelFormatMode == PixelFormatMode.Auto
+                && (source.IsHdr || TenBitFriendlyCodecs.Contains(profile.VideoCodec, StringComparer.OrdinalIgnoreCase)));
+
+        if (!keep || encoderPixelFormats is null || encoderPixelFormats.Count == 0)
+        {
+            return "yuv420p";
+        }
+
+        foreach (var candidate in TenBitCandidates)
+        {
+            if (encoderPixelFormats.Contains(candidate, StringComparer.OrdinalIgnoreCase))
+            {
+                return candidate;
+            }
+        }
+
+        // The encoder advertises formats but no 10-bit one (h264_qsv, for instance, offers only nv12).
+        // Falling back to 8-bit keeps the encode working instead of failing on an unsupported format.
+        return "yuv420p";
     }
 
     // Renders an argument list as a single, log-friendly command line (tokens with spaces are quoted).

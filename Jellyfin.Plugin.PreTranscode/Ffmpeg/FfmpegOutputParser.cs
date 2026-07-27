@@ -27,6 +27,9 @@ internal static partial class FfmpegOutputParser
     [GeneratedRegex(@"^\s*-preset\s+<(?<type>[a-z]+)>")]
     private static partial Regex PresetOptionRegex();
 
+    [GeneratedRegex(@"^\s*Supported pixel formats:\s*(?<list>.*?)\s*$", RegexOptions.IgnoreCase)]
+    private static partial Regex PixelFormatsLineRegex();
+
     [GeneratedRegex(@"\(from\s+(?<min>-?\d+)\s+to\s+(?<max>-?\d+)\)")]
     private static partial Regex RangeRegex();
 
@@ -187,6 +190,24 @@ internal static partial class FfmpegOutputParser
         return modes;
     }
 
+    // ffmpeg prints the encoder's accepted input formats as a single line:
+    //     Supported pixel formats: yuv420p yuvj420p ... yuv420p10le ...
+    // Returned verbatim so the caller can test membership rather than assume a per-encoder format.
+    private static string[] ParsePixelFormats(string[] lines)
+    {
+        foreach (var line in lines)
+        {
+            var match = PixelFormatsLineRegex().Match(line);
+            if (match.Success)
+            {
+                return match.Groups["list"].Value
+                    .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            }
+        }
+
+        return Array.Empty<string>();
+    }
+
     /// <summary>
     /// Parses the output of <c>ffmpeg -h encoder=NAME</c> to discover the encoder's valid preset values.
     /// </summary>
@@ -202,6 +223,7 @@ internal static partial class FfmpegOutputParser
         }
 
         var lines = SplitLines(encoderHelp);
+        info.PixelFormats = ParsePixelFormats(lines);
         for (var i = 0; i < lines.Length; i++)
         {
             var option = PresetOptionRegex().Match(lines[i]);

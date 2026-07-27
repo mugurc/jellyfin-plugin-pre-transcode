@@ -83,6 +83,7 @@ internal sealed class JobQueue : IJobQueue
             }
 
             _jobs.Add(job);
+            TrimFinished();
             Save();
             return true;
         }
@@ -98,6 +99,7 @@ internal sealed class JobQueue : IJobQueue
                 _jobs[index] = job;
             }
 
+            TrimFinished();
             Save();
         }
     }
@@ -202,6 +204,52 @@ internal sealed class JobQueue : IJobQueue
         {
             _jobs.RemoveAll(j => j.Status is JobStatus.Completed or JobStatus.Failed or JobStatus.Cancelled or JobStatus.Skipped);
             Save();
+        }
+    }
+
+    /// <summary>
+    /// Drops the oldest finished jobs beyond the configured cap. Pure over the job list so the policy is
+    /// unit-testable; the caller holds the lock and persists afterwards.
+    /// </summary>
+    /// <param name="jobs">The job list, mutated in place.</param>
+    /// <param name="maxFinishedKept">The cap; <c>0</c> or less means unlimited.</param>
+    /// <returns>How many jobs were removed.</returns>
+    internal static int TrimFinished(List<TranscodeJob> jobs, int maxFinishedKept)
+    {
+        if (maxFinishedKept <= 0)
+        {
+            return 0;
+        }
+
+        // Pending and Processing jobs are the live queue and are never eligible, however old they are.
+        var finished = jobs
+            .Where(j => j.Status is JobStatus.Completed or JobStatus.Failed or JobStatus.Cancelled or JobStatus.Skipped)
+            .ToList();
+
+        var excess = finished.Count - maxFinishedKept;
+        if (excess <= 0)
+        {
+            return 0;
+        }
+
+        // Oldest first. FinishedUtc is the natural key; fall back to CreatedUtc for a record written by an
+        // older build (or one that somehow finished without a timestamp) so ordering is always total.
+        var doomed = finished
+            .OrderBy(j => j.FinishedUtc ?? j.CreatedUtc)
+            .Take(excess)
+            .Select(j => j.Id)
+            .ToHashSet(StringComparer.Ordinal);
+
+        return jobs.RemoveAll(j => doomed.Contains(j.Id));
+    }
+
+    private void TrimFinished()
+    {
+        var cap = Plugin.Instance?.Configuration.MaxFinishedJobsKept ?? 0;
+        var removed = TrimFinished(_jobs, cap);
+        if (removed > 0)
+        {
+            _logger.LogInformation("Trimmed {Count} old finished job(s) to stay within the {Cap}-job history limit", removed, cap);
         }
     }
 

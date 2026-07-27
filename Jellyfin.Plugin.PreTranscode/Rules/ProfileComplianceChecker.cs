@@ -19,6 +19,25 @@ internal static class ProfileComplianceChecker
         return !NeedsWork(profile, info, presets, out _);
     }
 
+    /// <summary>
+    /// Whether this profile stands a matched source down as "nothing to do here". The compliance check
+    /// compares only codec, container, resolution, audio and HDR — never file size or bitrate — so a
+    /// profile whose purpose is to re-encode material that already carries the target codec must be able
+    /// to opt out, or it silently vetoes the very trigger rules written to drive it.
+    /// <para>
+    /// The evaluator (before queueing) and the executor (before encoding, and the only gate a manually
+    /// queued item passes) both decide through here, so the two can never disagree.
+    /// </para>
+    /// </summary>
+    /// <param name="profile">The target profile.</param>
+    /// <param name="info">The probed source facts.</param>
+    /// <param name="presets">The configured resolution presets.</param>
+    /// <returns><c>true</c> when the source should be skipped as already compliant.</returns>
+    public static bool ShouldSkipAsCompliant(EncodingProfile profile, MediaProbeInfo info, IReadOnlyList<ResolutionPreset> presets)
+    {
+        return profile.SkipIfAlreadyCompliant && IsAlreadyCompliant(profile, info, presets);
+    }
+
     // True when at least one dimension of the profile would change the source; 'reason' describes the first.
     public static bool NeedsWork(EncodingProfile profile, MediaProbeInfo info, IReadOnlyList<ResolutionPreset> presets, out string reason)
     {

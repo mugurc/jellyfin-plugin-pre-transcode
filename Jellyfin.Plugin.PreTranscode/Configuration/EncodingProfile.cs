@@ -55,6 +55,11 @@ public class EncodingProfile
     public string Preset { get; set; } = "medium";
 
     /// <summary>
+    /// Gets or sets how the output pixel format (and so the bit depth) is chosen.
+    /// </summary>
+    public PixelFormatMode PixelFormatMode { get; set; } = PixelFormatMode.Auto;
+
+    /// <summary>
     /// Gets or sets additional raw ffmpeg output arguments for video (advanced escape hatch).
     /// </summary>
     public string ExtraVideoArgs { get; set; } = string.Empty;
@@ -152,6 +157,20 @@ public class EncodingProfile
     /// replacing/accompanying the original with a larger file.
     /// </summary>
     public bool DiscardOutputIfLarger { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether a source that already matches this profile's codecs,
+    /// container, resolution cap and channel policy is skipped without transcoding. On by default, which
+    /// is what makes repeated sweeps cheap and idempotent.
+    /// <para>
+    /// Turn it off for profiles whose purpose is to <em>re-encode</em> material that already has the
+    /// target codec — a "shrink oversized H.265" profile, for instance, driven by
+    /// <see cref="ConditionType.FileSizeMb"/>/<see cref="ConditionType.VideoBitrateKbps"/> trigger rules.
+    /// The compliance check only compares codec/container/resolution/audio, so it considers such a file
+    /// compliant and silently vetoes the rule that just matched it.
+    /// </para>
+    /// </summary>
+    public bool SkipIfAlreadyCompliant { get; set; } = true;
 
     /// <summary>
     /// Gets or sets additional raw ffmpeg output arguments applied to the whole command (advanced escape hatch).

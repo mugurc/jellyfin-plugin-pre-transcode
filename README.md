@@ -38,6 +38,11 @@ to live-transcode that file again.
   populated from what your ffmpeg actually supports (`-codecs`, `-muxers`, per-encoder presets,
   the `tonemap` filter).
 - **Reusable encoding profiles** and **editable resolution presets**.
+- **Keeps bit depth where it matters.** A 10-bit source is no longer flattened to 8-bit by default: the
+  chosen encoder is asked which pixel formats it accepts (they differ — `yuv420p10le` for libx265,
+  `p010le` for the NVENC/QSV/AMF families, none at all for `h264_qsv`) and 10-bit is kept for HEVC/AV1/VP9
+  targets and for HDR that isn't being tone-mapped. H.264 still gets 8-bit, because its 10-bit profile
+  isn't hardware-decodable on most clients. Overridable per profile.
 - **A rules engine** that decides *when* a file should be queued: combinable conditions
   (video codec, resolution, bitrate, HDR/Dolby Vision, audio codec/channels, container, …) with
   AND/OR inside a rule and OR across rules.
@@ -53,6 +58,12 @@ to live-transcode that file again.
   and embedded fonts (for ASS/SSA) are copied losslessly too. *(MP4/MOV can only hold `mov_text`, so
   choose an mkv container in your profile if you want subtitles preserved.)*
 - **Idempotent.** Files already compliant with the target profile are detected and skipped cheaply.
+  That check compares codec, container, resolution, audio and HDR — **not** file size or bitrate — so a
+  profile built to *shrink* material that already carries the target codec should switch off
+  **"Skip files already matching this profile"**, or its trigger rules will match and then be vetoed.
+- **Explains itself.** Turn on **"Explain every decision in the log"** and each item logs what ffprobe
+  found, every rule condition with the value it was compared against and whether it passed, and the
+  reason anything was skipped.
 - **Feeds itself.** A post-scan hook and an item-added monitor queue new items automatically (opt-in).
   A freshly-added file that is still inside its stability window (an in-progress copy/download) is
   **deferred and re-checked until it settles** rather than skipped, so a new movie is picked up shortly
@@ -121,8 +132,10 @@ Then open **Dashboard → Plugins → Pre-Transcode**.
 All settings live on the plugin's page (**Dashboard → Plugins → Pre-Transcode**):
 
 - **General** — master enable switch, "queue new items automatically after a scan", max concurrent
-  jobs (default 1), and the file-stability window (seconds a file must be untouched before it is
-  eligible, to avoid grabbing active downloads).
+  jobs (default 1), the file-stability window (seconds a file must be untouched before it is
+  eligible, to avoid grabbing active downloads), how many finished jobs to keep (0 = all), and
+  **"Explain every decision in the log"** (see *Why isn't my rule firing?* below). Pausing the queue is
+  remembered across restarts.
 - **Encoding profiles** — one or more named profiles. Each defines the target video codec + encoder,
   quality (CRF/QP *or* target/max bitrate), preset, resolution policy (unchanged / cap width / cap
   height / cap longest edge / match a preset), audio codec + encoder + bitrate + downmix policy,
@@ -154,6 +167,35 @@ All settings live on the plugin's page (**Dashboard → Plugins → Pre-Transcod
    run now or on its daily schedule).
 3. Watch progress on the plugin's **Queue & status** page: pending / processing (with %) / completed
    / failed (with the ffmpeg error), plus pause, cancel, requeue and clear-finished controls.
+
+### Why isn't my rule firing?
+
+Switch on **"Explain every decision in the log"** (General) and run a sweep. Every item then logs the
+probed facts, each condition with the value it was compared against, and the reason it was skipped:
+
+```
+Pre-Transcode evaluation of /media/Movie.mkv:
+  video=hevc 1920x1080 @ unknown (probe reported none) kbps, fps=23.976, audio=aac/2ch,
+  container=matroska,webm, duration=118 min, size=4021 MB, hdr=false, dolbyvision=false
+  rule 'h265 too big (2hr)' (match ALL) => MATCH
+      VideoCodec In 'HEVC' | actual: hevc => PASS
+      VideoDurationMinutes GreaterThanOrEqual '100' | actual: 118 => PASS
+      FileSizeMb GreaterThanOrEqual '950' | actual: 4021 => PASS
+  verdict: at least one rule matched
+```
+
+Turn it off again afterwards — it writes a block per library item.
+
+Two traps worth knowing about, both of which this log makes visible:
+
+- **A matched rule can still be vetoed.** If the log says *"a rule matched, but the file is already
+  compliant"*, the target profile would change nothing it compares — codec, container, resolution,
+  audio, HDR. **File size and bitrate are not compared.** A profile that exists to shrink material
+  already in the target codec must therefore switch off **"Skip files already matching this profile"**.
+- **An unknown value fails every operator.** A numeric condition whose value the probe could not
+  determine is reported as `unknown (probe reported none)` and fails for *any* operator — it is not a
+  threshold miss. Matroska, for instance, carries no per-stream video bitrate, so `VideoBitrateKbps`
+  conditions cannot be used on mkv sources.
 
 ## Building
 

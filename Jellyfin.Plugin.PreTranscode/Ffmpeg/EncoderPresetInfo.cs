@@ -43,4 +43,17 @@ public class EncoderPresetInfo
     /// or supplied as a documented fallback because ffmpeg does not enumerate them (<c>false</c>).
     /// </summary>
     public bool FromFfmpeg { get; set; }
+
+    /// <summary>
+    /// Gets or sets the pixel formats this encoder accepts, exactly as <c>ffmpeg -h encoder=…</c>
+    /// reports them. Empty when ffmpeg does not list any (VAAPI, for instance, reports only its
+    /// hardware surface type).
+    /// <para>
+    /// Read to decide whether a 10-bit source can keep its bit depth: the correct 10-bit format is
+    /// encoder-specific and cannot be assumed — verified against ffmpeg 8.1.1, libx265/libsvtav1/libaom
+    /// take <c>yuv420p10le</c>, the NVENC/QSV/AMF families take <c>p010le</c>, and <c>h264_qsv</c>
+    /// offers no 10-bit format at all.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<string> PixelFormats { get; set; } = Array.Empty<string>();
 }

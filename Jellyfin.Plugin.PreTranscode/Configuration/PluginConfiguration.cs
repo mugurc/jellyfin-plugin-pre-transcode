@@ -59,6 +59,36 @@ public class PluginConfiguration : BasePluginConfiguration
     public int FileStabilitySeconds { get; set; } = 60;
 
     /// <summary>
+    /// Gets or sets a value indicating whether the job queue is paused. Persisted so that pausing to free
+    /// the CPU survives a restart — an admin who paused the queue and then updated the server would
+    /// otherwise find encodes running again with no action on their part.
+    /// </summary>
+    public bool QueuePaused { get; set; }
+
+    /// <summary>
+    /// Gets or sets the maximum number of finished (completed/failed/cancelled/skipped) jobs kept in the
+    /// queue file; <c>0</c> means unlimited, which is the default and the historical behaviour.
+    /// <para>
+    /// Worth setting on a large library: the whole queue is re-serialised to disk on every status
+    /// update, so a history that only ever grows makes each of those writes slower forever. Trimming is
+    /// oldest-first and never touches pending or running jobs.
+    /// </para>
+    /// </summary>
+    public int MaxFinishedJobsKept { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether every evaluation decision is written to the Jellyfin log:
+    /// the probed facts about each file, each trigger-rule condition with its configured value, the
+    /// actual value it was compared against and whether it passed, and the reason an item was skipped.
+    /// <para>
+    /// Off by default — it logs a block per library item, so a sweep over a large library is verbose. It
+    /// exists because every other skip path is silent, which makes a rule that does not fire impossible
+    /// to diagnose. Logged at Information level so it is visible without lowering the server's log level.
+    /// </para>
+    /// </summary>
+    public bool VerboseRuleLogging { get; set; }
+
+    /// <summary>
     /// Gets or sets the id of the default <see cref="EncodingProfile"/> used when a library has no override.
     /// </summary>
     public string DefaultProfileId { get; set; } = string.Empty;

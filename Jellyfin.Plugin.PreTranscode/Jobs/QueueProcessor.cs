@@ -49,6 +49,16 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        // Restore the persisted pause state before the loop can claim anything. An admin who paused the
+        // queue to free the CPU and then restarted (or updated) the server would otherwise come back to
+        // encodes running again, with nothing in the UI to explain why.
+        var paused = Plugin.Instance?.Configuration.QueuePaused == true;
+        _queue.IsPaused = paused;
+        if (paused)
+        {
+            _logger.LogInformation("Pre-Transcode queue is paused (restored from the saved configuration)");
+        }
+
         _stopCts = new CancellationTokenSource();
         _loop = Task.Run(() => RunLoopAsync(_stopCts.Token), CancellationToken.None);
         _logger.LogInformation("Pre-Transcode queue processor started");
@@ -139,6 +149,8 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
                 }
             }
         }
+
+        PersistPaused(true);
     }
 
     public void Resume()
@@ -159,6 +171,26 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
         }
 
         _queue.IsPaused = false;
+        PersistPaused(false);
+    }
+
+    // Best-effort: the in-memory flag is what actually gates the loop, so a config write that fails must
+    // not turn Pause into an exception the API surfaces as a 500 — it only costs the state on restart.
+    private void PersistPaused(bool paused)
+    {
+        try
+        {
+            var plugin = Plugin.Instance;
+            if (plugin is not null && plugin.Configuration.QueuePaused != paused)
+            {
+                plugin.Configuration.QueuePaused = paused;
+                plugin.SaveConfiguration();
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not persist the queue's paused state; it will not survive a restart");
+        }
     }
 
     public void Dispose()

@@ -53,10 +53,22 @@
                         <input id="FileStabilitySeconds" type="number" is="emby-input" min="0" max="3600" />
                         <div class="fieldDescription">A file&rsquo;s timestamp must be unchanged for this long before it&rsquo;s eligible, so an in-progress download or copy isn&rsquo;t grabbed mid-write.</div>
                     </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="MaxFinishedJobsKept" title="Queue history size">Finished jobs to keep</label>
+                        <input id="MaxFinishedJobsKept" type="number" is="emby-input" min="0" max="100000" />
+                        <div class="fieldDescription"><b>0 = keep everything</b> (the default). The whole queue is rewritten on every status update, so a history that only grows makes each write slower. Note that a forgotten job no longer records that its source was transcoded &mdash; with the <i>Replace in place</i> policy, that source can be picked up again by a later sweep if it still matches your rules.</div>
+                    </div>
                     <div class="selectContainer">
                         <label class="selectLabel" for="DefaultProfileId">Default profile</label>
                         <select is="emby-select" id="DefaultProfileId" class="emby-select-withcolor emby-select"></select>
                         <div class="fieldDescription">The encoding profile used for libraries without a per-library override below.</div>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="VerboseRuleLogging" type="checkbox" is="emby-checkbox" />
+                            <span>Explain every decision in the log (debug)</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">Writes one block per library item to the Jellyfin log: what ffprobe found, every trigger-rule condition with the value it was compared against and whether it passed, and the reason an item was skipped. Turn this on when a rule doesn&rsquo;t fire and you can&rsquo;t tell why &mdash; then off again, because a sweep over a large library produces a lot of output.</div>
                     </div>
                 </div>
 
@@ -289,6 +301,12 @@
             }
             qm.select.addEventListener('change', syncQuality); syncQuality();
 
+            var pf = labeledSelect('pPixelFormatMode', 'Bit depth / pixel format',
+                'A 10-bit source re-encoded as 8-bit loses precision, and an <b>HDR</b> source forced to 8-bit while keeping its HDR tags shows visible banding. <b>Auto</b> keeps 10-bit for HEVC/AV1/VP9 targets and for untone-mapped HDR, and forces 8-bit for H.264 (its 10-bit profile is not hardware-decodable on most clients). The chosen encoder is asked what it actually supports, so an encoder with no 10-bit format falls back to 8-bit.');
+            [['Auto', 'Auto (recommended)'], ['ForceYuv420p', 'Always 8-bit (yuv420p) — maximum compatibility'], ['KeepSourceBitDepth', 'Always keep the source bit depth']]
+                .forEach(function (m) { pf.select.appendChild(opt(m[0], m[1], p.PixelFormatMode || 'Auto')); });
+            host.appendChild(pf.wrap);
+
             // ---------------- RESOLUTION ----------------
             host.appendChild(subHeading('Resolution', 'Only ever <b>downscales</b> — sources already smaller than the target are left as-is.'));
             var rm = labeledSelect('pResolutionMode', 'Resolution policy', 'Keep the source size, cap it by width / height / longest edge, or fit it into a named preset.');
@@ -364,6 +382,7 @@
             }
             om.select.addEventListener('change', syncOutput); syncOutput();
             host.appendChild(labeledCheckbox('pDiscardOutputIfLarger', 'Keep original if the transcode is not smaller', p.DiscardOutputIfLarger, 'After a successful encode, if the new file is not smaller than the source, throw it away and keep the original untouched. Useful when re-encoding to a more efficient codec that occasionally produces a bigger file.'));
+            host.appendChild(labeledCheckbox('pSkipIfAlreadyCompliant', 'Skip files already matching this profile', p.SkipIfAlreadyCompliant !== false, 'On by default, and what makes repeated sweeps cheap: a source whose video codec, audio codec, container, resolution and channel count already match this profile is skipped, because re-encoding it would change nothing. <b>This check does not look at file size or bitrate.</b> So if this profile exists to shrink material that already carries the target codec &mdash; driven by <i>FileSizeMb</i> or <i>VideoBitrateKbps</i> trigger rules &mdash; turn this off, or your rules will match and then be vetoed here.'));
 
             // ---------------- ADVANCED (collapsed) ----------------
             host.appendChild(el('details', { style: 'margin-top:1.4em;padding-top:0.9em;border-top:1px solid rgba(128,128,128,.22);' }, [
@@ -389,12 +408,14 @@
             p.Name = val('pName'); p.VideoCodec = val('pVideoCodec'); p.VideoEncoder = val('pVideoEncoder');
             p.Preset = val('pPreset'); p.VideoQualityMode = val('pVideoQualityMode'); p.Crf = num('pCrf');
             p.VideoBitrateKbps = num('pVideoBitrateKbps'); p.VideoMaxBitrateKbps = num('pVideoMaxBitrateKbps');
+            p.PixelFormatMode = val('pPixelFormatMode');
             p.ResolutionMode = val('pResolutionMode'); p.MaxWidth = num('pMaxWidth'); p.MaxHeight = num('pMaxHeight');
             p.ResolutionPresetId = val('pResolutionPresetId'); p.AudioCodec = val('pAudioCodec'); p.AudioEncoder = val('pAudioEncoder');
             p.AudioBitrateKbps = num('pAudioBitrateKbps'); p.ChannelPolicy = val('pChannelPolicy'); p.MaxAudioChannels = num('pMaxAudioChannels');
             p.TonemapHdr = chk('pTonemapHdr'); p.TonemapAlgorithm = val('pTonemapAlgorithm'); p.Container = val('pContainer');
             p.OutputMode = val('pOutputMode'); p.OutputDirectory = val('pOutputDirectory');
             p.AlternateVersionLabel = val('pAlternateVersionLabel'); p.DiscardOutputIfLarger = chk('pDiscardOutputIfLarger');
+            p.SkipIfAlreadyCompliant = chk('pSkipIfAlreadyCompliant');
             p.ExtraVideoArgs = val('pExtraVideoArgs'); p.ExtraOutputArgs = val('pExtraOutputArgs');
         }
 
@@ -537,6 +558,8 @@
             document.getElementById('ProcessNewItemsAutomatically').checked = c.ProcessNewItemsAutomatically;
             document.getElementById('MaxConcurrentJobs').value = c.MaxConcurrentJobs;
             document.getElementById('FileStabilitySeconds').value = c.FileStabilitySeconds;
+            document.getElementById('MaxFinishedJobsKept').value = c.MaxFinishedJobsKept;
+            document.getElementById('VerboseRuleLogging').checked = c.VerboseRuleLogging;
         }
         function saveGeneral() {
             var c = state.config;
@@ -544,6 +567,8 @@
             c.ProcessNewItemsAutomatically = document.getElementById('ProcessNewItemsAutomatically').checked;
             c.MaxConcurrentJobs = parseInt(document.getElementById('MaxConcurrentJobs').value, 10) || 1;
             c.FileStabilitySeconds = parseInt(document.getElementById('FileStabilitySeconds').value, 10) || 0;
+            c.MaxFinishedJobsKept = parseInt(document.getElementById('MaxFinishedJobsKept').value, 10) || 0;
+            c.VerboseRuleLogging = document.getElementById('VerboseRuleLogging').checked;
             c.DefaultProfileId = document.getElementById('DefaultProfileId').value;
         }
 
@@ -592,7 +617,7 @@
             state._editing = sel.value; renderProfileEditor();
         });
         page.querySelector('#btnAddProfile').addEventListener('click', function () {
-            var p = { Id: guid(), Name: 'New profile', VideoCodec: 'h264', VideoEncoder: 'libx264', VideoQualityMode: 'Crf', Crf: 21, VideoBitrateKbps: 6000, VideoMaxBitrateKbps: 0, Preset: 'medium', ExtraVideoArgs: '', ResolutionMode: 'Unchanged', MaxWidth: 0, MaxHeight: 0, ResolutionPresetId: '', AudioCodec: 'aac', AudioEncoder: 'aac', AudioBitrateKbps: 256, ChannelPolicy: 'Unchanged', MaxAudioChannels: 2, TonemapHdr: false, TonemapAlgorithm: 'hable', Container: 'mp4', OutputMode: 'SeparateDirectory', OutputDirectory: '', AlternateVersionLabel: 'Pre-Transcode', DiscardOutputIfLarger: false, ExtraOutputArgs: '' };
+            var p = { Id: guid(), Name: 'New profile', VideoCodec: 'h264', VideoEncoder: 'libx264', VideoQualityMode: 'Crf', Crf: 21, VideoBitrateKbps: 6000, VideoMaxBitrateKbps: 0, Preset: 'medium', PixelFormatMode: 'Auto', ExtraVideoArgs: '', ResolutionMode: 'Unchanged', MaxWidth: 0, MaxHeight: 0, ResolutionPresetId: '', AudioCodec: 'aac', AudioEncoder: 'aac', AudioBitrateKbps: 256, ChannelPolicy: 'Unchanged', MaxAudioChannels: 2, TonemapHdr: false, TonemapAlgorithm: 'hable', Container: 'mp4', OutputMode: 'SeparateDirectory', OutputDirectory: '', AlternateVersionLabel: 'Pre-Transcode', DiscardOutputIfLarger: false, SkipIfAlreadyCompliant: true, ExtraOutputArgs: '' };
             state.config.Profiles.push(p); fillProfileSelectors(); document.getElementById('ProfileSelector').value = p.Id; state._editing = p.Id; renderProfileEditor();
         });
         page.querySelector('#btnDeleteProfile').addEventListener('click', function () {

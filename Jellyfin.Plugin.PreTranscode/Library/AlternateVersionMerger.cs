@@ -92,6 +92,23 @@ internal sealed class AlternateVersionMerger : IDisposable
                     return;
                 }
 
+                // For a MOVIE the output filename ("<movie folder> - <label>.<ext>") already matches
+                // Jellyfin's own multi-version convention, so the scanner has grouped the two files as
+                // *local* alternate versions before this ever runs. Adding the database link on top makes
+                // Jellyfin count the same file twice: Video.GetAllItemsForMediaSources concatenates
+                // GetLinkedAlternateVersions() and GetLocalAlternateVersionIds() and, on 10.11, does not
+                // de-duplicate them (the DistinctBy exists only on later builds) — so the version picker
+                // lists the transcode twice. The database link is only needed where the naming convention
+                // does nothing, i.e. TV episodes.
+                if (IsAlreadyLocalVersion(primary, alternate))
+                {
+                    _logger.LogInformation(
+                        "Auto-merge not needed for {Output}: Jellyfin already groups it with {Source} by filename",
+                        outputPath,
+                        sourcePath);
+                    return;
+                }
+
                 // Re-fetch the canonical, cached instances by id. FindByPath materialises fresh detached
                 // copies; mutating those races the copy the scanner holds. GetItemById returns the shared
                 // instance, so the merge writes to the same object subsequent saves see.
@@ -122,6 +139,55 @@ internal sealed class AlternateVersionMerger : IDisposable
         {
             _logger.LogWarning(ex, "Auto-merge of alternate version failed for {Output}", outputPath);
         }
+    }
+
+    /// <summary>
+    /// Whether Jellyfin's own scanner has already grouped these two files as versions of one item, which
+    /// it does for movies whose sibling file follows the "&lt;name&gt; - &lt;version&gt;.&lt;ext&gt;"
+    /// convention. Compared by id where possible and by path as a fallback, since a freshly-indexed
+    /// item's local-version ids are resolved lazily.
+    /// </summary>
+    private static bool IsAlreadyLocalVersion(Video primary, Video alternate)
+    {
+        return IsAlreadyLocalVersion(
+            primary.GetLocalAlternateVersionIds(),
+            primary.LocalAlternateVersions,
+            alternate.Id,
+            alternate.Path);
+    }
+
+    // The decision itself, over plain values, so it is testable without constructing Jellyfin entities.
+    internal static bool IsAlreadyLocalVersion(
+        IEnumerable<Guid>? localVersionIds,
+        IReadOnlyList<string>? localVersionPaths,
+        Guid alternateId,
+        string? alternatePath)
+    {
+        if (localVersionIds is not null)
+        {
+            foreach (var id in localVersionIds)
+            {
+                if (id.Equals(alternateId))
+                {
+                    return true;
+                }
+            }
+        }
+
+        if (localVersionPaths is null || string.IsNullOrEmpty(alternatePath))
+        {
+            return false;
+        }
+
+        foreach (var path in localVersionPaths)
+        {
+            if (string.Equals(path, alternatePath, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // Mirrors the dashboard's MergeVersions logic, but with the source pinned as the primary version.

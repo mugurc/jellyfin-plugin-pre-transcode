@@ -71,6 +71,48 @@ internal static class RuleEvaluator
         }
     }
 
+    /// <summary>
+    /// The value the engine actually compared a condition of this type against, rendered for the
+    /// diagnostic log. Numeric fields the probe could not determine are reported as <c>unknown</c>
+    /// rather than <c>0</c>, because that is the state the <c>actual &lt;= 0</c> guard reacts to: such a
+    /// condition fails for <em>every</em> operator, which is otherwise indistinguishable from a genuine
+    /// threshold miss.
+    /// </summary>
+    /// <param name="type">The condition type.</param>
+    /// <param name="info">The probed media facts.</param>
+    /// <returns>A human-readable rendering of the probed value.</returns>
+    internal static string ActualValue(ConditionType type, MediaProbeInfo info)
+    {
+        return type switch
+        {
+            ConditionType.VideoCodec => Text(info.VideoCodec),
+            ConditionType.AudioCodec => Text(info.AudioCodec),
+            ConditionType.Container => Text(info.Container),
+            ConditionType.VideoHeight => Number(info.Height),
+            ConditionType.VideoWidth => Number(info.Width),
+            ConditionType.VideoBitrateKbps => Number(info.VideoBitrateKbps),
+            ConditionType.AudioChannels => Number(info.AudioChannels),
+            ConditionType.VideoFramerate => Number(info.VideoFramerate),
+            ConditionType.FileSizeMb => Number(info.FileSizeMb),
+            ConditionType.VideoDurationMinutes => Number(info.DurationSeconds / 60.0),
+            ConditionType.IsHdr => info.IsHdr ? "true" : "false",
+            ConditionType.IsDolbyVision => info.IsDolbyVision ? "true" : "false",
+            _ => "(unsupported condition type)"
+        };
+    }
+
+    private static string Text(string value)
+    {
+        return string.IsNullOrEmpty(value) ? "(none)" : value;
+    }
+
+    private static string Number(double value)
+    {
+        return value > 0
+            ? value.ToString("0.###", CultureInfo.InvariantCulture)
+            : "unknown (probe reported none)";
+    }
+
     private static bool EvaluateString(string actual, RuleCondition condition)
     {
         actual ??= string.Empty;

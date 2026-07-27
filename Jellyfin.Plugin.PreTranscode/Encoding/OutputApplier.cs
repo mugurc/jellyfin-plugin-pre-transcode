@@ -70,6 +70,42 @@ internal static class OutputApplier
     }
 
     /// <summary>
+    /// Whether two paths denote the same file, using the filesystem's own case rules — case-insensitive
+    /// on Windows, case-sensitive on Linux/Docker. Callers that compare a computed output path against a
+    /// source path must use this rather than a fixed comparison: <c>OrdinalIgnoreCase</c> would treat
+    /// <c>/m/Movie.MKV</c> and <c>/m/Movie.mkv</c> as one file on Linux, where they are two.
+    /// </summary>
+    /// <param name="a">The first path.</param>
+    /// <param name="b">The second path.</param>
+    /// <returns><c>true</c> when both paths denote the same file.</returns>
+    internal static bool IsSameFile(string? a, string? b)
+    {
+        return string.Equals(a, b, PathComparison);
+    }
+
+    /// <summary>
+    /// Whether this profile's output for this source resolves to the source file itself — a "separate
+    /// directory" profile with no output directory (so the output lands beside the source) whose
+    /// container maps to the extension the source already has, or a source that already sits in the
+    /// configured output directory.
+    /// <para>
+    /// Such a job cannot do anything useful: <see cref="WriteToSeparateDirectory"/> will not overwrite
+    /// the source, so it falls back to <see cref="MakeUnique"/> and writes "Movie (1).mkv" beside it,
+    /// which Jellyfin indexes as a second movie. Both entry points — the evaluator (sweeps, the
+    /// item-added monitor) and the executor (which a manually-queued job reaches <em>without</em> passing
+    /// through the evaluator) — must refuse it, so the test lives here rather than in either of them.
+    /// </para>
+    /// </summary>
+    /// <param name="profile">The encoding profile.</param>
+    /// <param name="sourcePath">The source file path.</param>
+    /// <returns><c>true</c> when the profile would write its output over its own source.</returns>
+    internal static bool WritesOverItsOwnSource(EncodingProfile profile, string sourcePath)
+    {
+        var expected = ExpectedOutputPath(profile, sourcePath);
+        return expected is not null && IsSameFile(expected, sourcePath);
+    }
+
+    /// <summary>
     /// The primary output path this profile would first write for the given source (before any
     /// uniqueness suffix), or <c>null</c> for <see cref="OutputHandlingMode.ReplaceInPlace"/> where no
     /// distinct sibling/target is created. Used to detect — independently of the job queue — that a

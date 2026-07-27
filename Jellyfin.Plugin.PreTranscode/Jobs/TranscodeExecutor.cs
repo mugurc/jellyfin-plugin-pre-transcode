@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -25,6 +26,7 @@ internal sealed class TranscodeExecutor
     private readonly IJobQueue _queue;
     private readonly IMediaProber _prober;
     private readonly IMediaEncoder _mediaEncoder;
+    private readonly IFfmpegCapabilitiesService _capabilities;
     private readonly AlternateVersionMerger _merger;
     private readonly string _tempDirectory;
     private readonly ILogger<TranscodeExecutor> _logger;
@@ -33,6 +35,7 @@ internal sealed class TranscodeExecutor
         IJobQueue queue,
         IMediaProber prober,
         IMediaEncoder mediaEncoder,
+        IFfmpegCapabilitiesService capabilities,
         AlternateVersionMerger merger,
         IApplicationPaths applicationPaths,
         ILogger<TranscodeExecutor> logger)
@@ -40,6 +43,7 @@ internal sealed class TranscodeExecutor
         _queue = queue;
         _prober = prober;
         _mediaEncoder = mediaEncoder;
+        _capabilities = capabilities;
         _merger = merger;
         _tempDirectory = Path.Combine(applicationPaths.DataPath, "pretranscode", "tmp");
         _logger = logger;
@@ -77,9 +81,26 @@ internal sealed class TranscodeExecutor
             // produced a second time — MakeUnique names it "... (1)" — so the same episode is transcoded
             // again and a duplicate output piles up. If the expected output is already on disk, this job
             // is a no-op; skip it.
+            // The evaluator refuses to queue a profile that would write its output over its own source,
+            // but a manually-queued item ("Transcode a single item") never passes through the evaluator —
+            // it goes straight into the queue — so the same guard has to exist on this path too. Without
+            // it the applier falls back to a unique name and drops "Movie (1).mkv" next to the source,
+            // which Jellyfin then indexes as a second movie, and the next such job makes "(2)". Failed
+            // rather than Skipped: nothing was already done, the job simply cannot be carried out as
+            // configured, and only the admin can resolve it.
+            if (OutputApplier.WritesOverItsOwnSource(profile, job.SourcePath))
+            {
+                Fail(
+                    job,
+                    "profile '" + profile.Name + "' writes its output to the source's own path — choose "
+                    + "'Replace in place', set an output directory, or pick a container different from the "
+                    + "source's extension");
+                return;
+            }
+
             var expectedOutput = OutputApplier.ExpectedOutputPath(profile, job.SourcePath);
             if (expectedOutput is not null
-                && !string.Equals(expectedOutput, job.SourcePath, StringComparison.OrdinalIgnoreCase)
+                && !OutputApplier.IsSameFile(expectedOutput, job.SourcePath)
                 && File.Exists(expectedOutput))
             {
                 job.Status = JobStatus.Skipped;
@@ -100,10 +121,16 @@ internal sealed class TranscodeExecutor
                 return;
             }
 
-            if (ProfileComplianceChecker.IsAlreadyCompliant(profile, probe, config.ResolutionPresets))
+            // Mirrors the evaluator: a profile that exists to re-encode material which already carries the
+            // target codec (shrinking oversized H.265, say) can turn this off, because the compliance check
+            // compares only codec/container/resolution/audio and would otherwise call every such file
+            // compliant. A manually-queued item lands here without ever passing the evaluator, so this is
+            // also the only compliance gate it sees.
+            if (ProfileComplianceChecker.ShouldSkipAsCompliant(profile, probe, config.ResolutionPresets))
             {
                 job.Status = JobStatus.Skipped;
-                job.StatusDetail = "already compliant";
+                job.StatusDetail = "already compliant — size/bitrate are not compared; "
+                    + "turn off “Skip files already matching this profile” to encode it anyway";
                 job.Progress = 100;
                 job.FinishedUtc = DateTime.UtcNow;
                 _queue.Update(job);
@@ -114,7 +141,14 @@ internal sealed class TranscodeExecutor
             Directory.CreateDirectory(_tempDirectory);
             tempFile = Path.Combine(_tempDirectory, job.Id + OutputApplier.ContainerExtension(profile.Container));
 
-            var arguments = FfmpegCommandBuilder.BuildArguments(profile, probe, config.ResolutionPresets, job.SourcePath, tempFile);
+            // Ask ffmpeg itself which pixel formats this encoder takes, so a 10-bit source can keep its
+            // bit depth only when the encoder actually accepts a 10-bit format (the correct one differs
+            // per family). Cached after the first call; on failure the list is empty and the builder
+            // falls back to 8-bit rather than guessing.
+            var encoderPixelFormats = await GetEncoderPixelFormatsAsync(profile, cancellationToken).ConfigureAwait(false);
+
+            var arguments = FfmpegCommandBuilder.BuildArguments(
+                profile, probe, config.ResolutionPresets, job.SourcePath, tempFile, encoderPixelFormats);
             _logger.LogInformation("Transcoding {Path} -> {Command}", job.SourcePath, FfmpegCommandBuilder.ToCommandLine(arguments));
 
             SetDetail(job, "transcoding");
@@ -205,6 +239,27 @@ internal sealed class TranscodeExecutor
         }
     }
 
+    // Never fails the job: an encoder whose formats cannot be discovered simply gets the safe 8-bit
+    // default, which is what every build did before the pixel-format policy existed.
+    private async Task<IReadOnlyList<string>> GetEncoderPixelFormatsAsync(EncodingProfile profile, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(profile.VideoEncoder))
+        {
+            return Array.Empty<string>();
+        }
+
+        try
+        {
+            var info = await _capabilities.GetEncoderPresetsAsync(profile.VideoEncoder, cancellationToken).ConfigureAwait(false);
+            return info.PixelFormats;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not read the pixel formats supported by {Encoder}; defaulting to 8-bit", profile.VideoEncoder);
+            return Array.Empty<string>();
+        }
+    }
+
     private static EncodingProfile? ResolveProfile(PluginConfiguration config, string profileId)
     {
         return config.Profiles.FirstOrDefault(p => string.Equals(p.Id, profileId, StringComparison.Ordinal))
@@ -248,6 +303,9 @@ internal sealed class TranscodeExecutor
         return sourceBytes > 0 && outputBytes >= sourceBytes;
     }
 
+    // Catches both exception types, because this runs from inside the catch blocks of ExecuteAsync: an
+    // UnauthorizedAccessException escaping here (a read-only temp file on Windows) would propagate out of
+    // the handler, breaking the "never throws" contract and leaving the job stuck Processing.
     private void TryDelete(string path)
     {
         if (string.IsNullOrEmpty(path))
@@ -262,7 +320,7 @@ internal sealed class TranscodeExecutor
                 File.Delete(path);
             }
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             _logger.LogWarning(ex, "Could not delete temp file {Path}", path);
         }

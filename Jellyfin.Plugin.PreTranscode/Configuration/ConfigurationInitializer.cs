@@ -196,6 +196,7 @@ internal static class ConfigurationInitializer
         Field(sb, p.VideoBitrateKbps.ToString(CultureInfo.InvariantCulture));
         Field(sb, p.VideoMaxBitrateKbps.ToString(CultureInfo.InvariantCulture));
         Field(sb, p.Preset);
+        Field(sb, ((int)p.PixelFormatMode).ToString(CultureInfo.InvariantCulture));
         Field(sb, p.ExtraVideoArgs);
         Field(sb, ((int)p.ResolutionMode).ToString(CultureInfo.InvariantCulture));
         Field(sb, p.MaxWidth.ToString(CultureInfo.InvariantCulture));
@@ -213,6 +214,7 @@ internal static class ConfigurationInitializer
         Field(sb, p.OutputDirectory);
         Field(sb, p.AlternateVersionLabel);
         Field(sb, p.DiscardOutputIfLarger ? "1" : "0");
+        Field(sb, p.SkipIfAlreadyCompliant ? "1" : "0");
         Field(sb, p.ExtraOutputArgs);
         return sb.ToString();
     }

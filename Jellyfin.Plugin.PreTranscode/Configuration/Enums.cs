@@ -67,6 +67,33 @@ public enum OutputHandlingMode
 }
 
 /// <summary>
+/// How the output pixel format (and therefore the bit depth) is chosen when the video is re-encoded.
+/// </summary>
+/// <remarks>
+/// The plugin used to force <c>yuv420p</c> (8-bit 4:2:0) unconditionally. That is the most compatible
+/// format, but it silently discards a 10-bit source's extra precision — and on an HDR source with
+/// tone-mapping switched off it produces the one combination that is always wrong: 8-bit samples still
+/// tagged as HDR, which is what causes visible banding.
+/// </remarks>
+public enum PixelFormatMode
+{
+    /// <summary>
+    /// Keep the source's bit depth when the target codec is one whose 10-bit profile is broadly
+    /// supported by client hardware decoders (HEVC/AV1/VP9) — and always when the source is HDR and is
+    /// not being tone-mapped, because 8-bit HDR is never correct. Otherwise force <c>yuv420p</c>. In
+    /// particular H.264 is still forced to 8-bit: High10 is poorly supported by client hardware, and
+    /// playing everywhere is the point of pre-transcoding.
+    /// </summary>
+    Auto,
+
+    /// <summary>Always force <c>yuv420p</c> (8-bit 4:2:0) — maximum compatibility, the pre-0.6.2 behaviour.</summary>
+    ForceYuv420p,
+
+    /// <summary>Keep the source's bit depth whenever the chosen encoder advertises a matching format.</summary>
+    KeepSourceBitDepth
+}
+
+/// <summary>
 /// How the conditions within a single rule are combined.
 /// </summary>
 public enum ConditionCombine
