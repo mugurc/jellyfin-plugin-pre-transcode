@@ -311,7 +311,9 @@ public class PreTranscodeController : ControllerBase
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public ActionResult<TranscodeJob> EnqueueItem([FromBody] EnqueueItemRequest request)
     {
-        if (!Guid.TryParse(request.ItemId, out var guid))
+        // Guid.TryParse accepts the all-zero guid, and LibraryManager.GetItemById throws
+        // ArgumentException("Guid can't be empty") on it — a 500 for what is plainly a bad request.
+        if (!Guid.TryParse(request.ItemId, out var guid) || guid.Equals(Guid.Empty))
         {
             return BadRequest("A valid ItemId is required.");
         }

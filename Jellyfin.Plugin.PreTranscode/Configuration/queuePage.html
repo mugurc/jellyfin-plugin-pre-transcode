@@ -17,6 +17,7 @@
                     </a>
                 </div>
                 <p class="fieldDescription" id="summary">Loading&hellip;</p>
+                <p class="fieldDescription" id="loadError" style="color:#c33;display:none;"></p>
                 <div class="flex align-items-center" style="gap:0.6em;flex-wrap:wrap;margin:0.5em 0;">
                     <button is="emby-button" type="button" id="btnSweep" class="raised"><span>Scan library now</span></button>
                     <button is="emby-button" type="button" id="btnPause" class="raised button-alt"><span>Pause queue</span></button>
@@ -69,7 +70,12 @@
     (function () {
         var page = document.querySelector('#PreTranscodeQueuePage');
         var timer = null;
+        var sweepTimer = null;
         var lastSig = null;
+
+        // Live cells of the rendered rows, so a poll can tick the progress bar, the ETA and the "x ago"
+        // texts without rebuilding anything — a rebuild destroys the Cancel button under the pointer.
+        var live = { processing: {}, recent: {} };
 
         function api(method, path, body) {
             var opts = { type: method, url: ApiClient.getUrl('PreTranscode/' + path), dataType: method === 'GET' ? 'json' : undefined };
@@ -138,6 +144,7 @@
             }
 
             host.innerHTML = '';
+            live.processing = {};
             jobs.forEach(function (job) {
                 var pct = job.Progress || 0;
                 var barColor = paused ? '#888' : '#00a4dc';
@@ -147,8 +154,8 @@
                 row.style.cssText = 'padding:0.45em 0;border-bottom:1px solid rgba(128,128,128,.15);';
                 row.innerHTML = nameLine(job)
                     + '<div style="background:rgba(128,128,128,.25);border-radius:4px;overflow:hidden;height:1.1em;margin-top:0.3em;max-width:34em;">'
-                    + '<div style="background:' + barColor + ';height:100%;width:' + pct + '%;"></div></div>'
-                    + '<div class="fieldDescription">' + label + ' · ' + esc(timeInfo(job)) + '</div>';
+                    + '<div class="ptBar" style="background:' + barColor + ';height:100%;width:' + pct + '%;"></div></div>'
+                    + '<div class="fieldDescription ptLine">' + label + ' · ' + esc(timeInfo(job)) + '</div>';
 
                 var btn = document.createElement('button');
                 btn.setAttribute('is', 'emby-button');
@@ -156,9 +163,15 @@
                 btn.className = 'raised button-alt';
                 btn.style.cssText = 'padding:0.2em 0.6em;margin-top:0.3em;';
                 btn.innerHTML = '<span>Cancel</span>';
-                btn.addEventListener('click', function () { api('POST', 'Jobs/' + job.Id + '/Cancel').then(load); });
+                btn.addEventListener('click', function () {
+                    api('POST', 'Jobs/' + job.Id + '/Cancel').then(load, function () {
+                        setError('Could not cancel that job — it may have just finished.');
+                        load();
+                    });
+                });
                 row.appendChild(btn);
 
+                live.processing[job.Id] = { bar: row.querySelector('.ptBar'), line: row.querySelector('.ptLine') };
                 host.appendChild(row);
             });
         }
@@ -199,10 +212,16 @@
 
                 html += '<div style="padding:0.35em 0;border-bottom:1px solid rgba(128,128,128,.15);">'
                     + nameLine(job)
-                    + '<div class="fieldDescription">' + esc(job.Status) + ' · ' + esc(ago(job))
+                    + '<div class="fieldDescription">' + esc(job.Status) + ' · <span data-ago="'
+                    + esc(job.Id) + '">' + esc(ago(job)) + '</span>'
                     + (note ? ' · ' + note : '') + '</div></div>';
             });
             host.innerHTML = html + moreLine(jobs.length, finishedTotal, 'in the history');
+
+            live.recent = {};
+            jobs.forEach(function (job) {
+                live.recent[job.Id] = host.querySelector('[data-ago="' + job.Id + '"]');
+            });
         }
 
         function load() {
@@ -213,25 +232,62 @@
                 var recent = st.Recent || [];
                 var finishedTotal = (st.Completed || 0) + (st.Failed || 0) + (st.Cancelled || 0) + (st.Skipped || 0);
 
+                setError('');
+
+                // Cancelled is listed too. It was left out while still counting towards the history total,
+                // so after "Cancel all" the summary showed near-zero counts above "… and 47 more in the
+                // history", with no line saying where they had gone.
                 document.getElementById('summary').textContent =
                     (st.IsPaused ? '⏸ PAUSED — ' : '') +
                     'Pending: ' + (st.Pending || 0) + ' · Processing: ' + (st.Processing || 0) +
                     ' · Completed: ' + (st.Completed || 0) + ' · Failed: ' + (st.Failed || 0) +
-                    ' · Skipped: ' + (st.Skipped || 0);
+                    ' · Cancelled: ' + (st.Cancelled || 0) + ' · Skipped: ' + (st.Skipped || 0);
 
-                // Rebuild only when something visible moved, so a text selection survives the 2s poll.
-                // While an encode is running the progress bar, elapsed time and ETA have to keep ticking,
-                // so the signature deliberately changes every poll in that case.
-                var sig = JSON.stringify([st.IsPaused ? 1 : 0, processing.length ? Date.now() : 0,
-                    st.Pending, finishedTotal,
+                // The structure is which rows exist and everything about them that is not a ticking
+                // number. Only that earns a rebuild — the progress bar, the ETA and the "x ago" texts are
+                // refreshed in place below. Folding a clock into this signature rebuilt the whole section
+                // every 2s, which destroys and recreates the Cancel button under the pointer; leaving the
+                // clock out entirely, as before, froze "4s ago" for ever once the queue went idle.
+                var sig = JSON.stringify([st.IsPaused ? 1 : 0, st.Pending, finishedTotal,
+                    processing.map(function (j) { return [j.Id, j.StatusDetail]; }),
                     upNext.map(function (j) { return j.Id; }),
                     recent.map(function (j) { return [j.Id, j.Status, j.OutputPath, j.ErrorMessage]; })]);
-                if (sig === lastSig) { return; }
-                lastSig = sig;
 
-                renderProcessing(processing, st.IsPaused);
-                renderUpNext(upNext, st.Pending || 0);
-                renderRecent(recent, finishedTotal);
+                if (sig !== lastSig) {
+                    lastSig = sig;
+                    renderProcessing(processing, st.IsPaused);
+                    renderUpNext(upNext, st.Pending || 0);
+                    renderRecent(recent, finishedTotal);
+                }
+
+                refreshVolatile(processing, recent, st.IsPaused);
+            }, function () {
+                // Without this the promise rejected unhandled every 2s and the control center went on
+                // showing the last good snapshot for ever — counts, progress bar and ETA all frozen but
+                // reading as live, which is how an admin ends up hitting "Cancel all" on a drained queue.
+                setError('Could not reach the server — the figures below are the last data received. Retrying…');
+            });
+        }
+
+        function setError(text) {
+            var el = document.getElementById('loadError');
+            el.textContent = text;
+            el.style.display = text ? '' : 'none';
+        }
+
+        function refreshVolatile(processing, recent, paused) {
+            processing.forEach(function (job) {
+                var cells = live.processing[job.Id];
+                if (!cells) { return; }
+                var pct = job.Progress || 0;
+                cells.bar.style.width = pct + '%';
+                cells.line.textContent = pct.toFixed(1) + '%' + (paused ? ' · paused' : '')
+                    + (job.StatusDetail ? ' · ' + job.StatusDetail : '') + ' · ' + timeInfo(job);
+            });
+
+            recent.forEach(function (job) {
+                var el = live.recent[job.Id];
+                if (el) { el.textContent = ago(job); }
             });
         }
 
@@ -319,7 +375,14 @@
         page.querySelector('#lnkSettings').addEventListener('click', function (e) { e.preventDefault(); Dashboard.navigate('configurationpage?name=Pre-Transcode'); });
         page.querySelector('#lnkQueue').addEventListener('click', function (e) { e.preventDefault(); openJobs('active'); });
         page.querySelector('#lnkHistory').addEventListener('click', function (e) { e.preventDefault(); openJobs('finished'); });
-        page.querySelector('#btnSweep').addEventListener('click', function () { api('POST', 'Sweep').then(function () { setTimeout(load, 1000); }); });
+        page.querySelector('#btnSweep').addEventListener('click', function () {
+            api('POST', 'Sweep').then(function () {
+                // Tracked so pagehide can clear it: an admin who clicks Sweep and immediately navigates to
+                // the job list left this firing a second later against a torn-down view.
+                if (sweepTimer) { clearTimeout(sweepTimer); }
+                sweepTimer = setTimeout(load, 1000);
+            }, function () { setError('Could not start the library scan.'); });
+        });
         page.querySelector('#btnPause').addEventListener('click', function () { api('POST', 'Queue/Pause').then(load); });
         page.querySelector('#btnResume').addEventListener('click', function () { api('POST', 'Queue/Resume').then(load); });
         page.querySelector('#btnCancelAll').addEventListener('click', function () {
@@ -335,7 +398,10 @@
         page.querySelector('#btnRefresh').addEventListener('click', function () { lastSig = null; load(); });
 
         page.addEventListener('pageshow', function () { if (timer) { clearInterval(timer); } lastSig = null; loadProfiles(); load(); timer = setInterval(load, 2000); });
-        page.addEventListener('pagehide', function () { if (timer) { clearInterval(timer); timer = null; } });
+        page.addEventListener('pagehide', function () {
+            if (timer) { clearInterval(timer); timer = null; }
+            if (sweepTimer) { clearTimeout(sweepTimer); sweepTimer = null; }
+        });
     })();
     </script>
 </div>

@@ -33,6 +33,7 @@
             <div class="verticalSection">
                 <div class="flex align-items-center" style="gap:0.6em;flex-wrap:wrap;">
                     <span class="fieldDescription" id="range">Loading&hellip;</span>
+                    <span class="fieldDescription" id="loadError" style="color:#c33;display:none;"></span>
                     <span style="flex:1;"></span>
                     <button is="emby-button" type="button" id="btnPrev" class="raised button-alt"><span>&laquo; Previous</span></button>
                     <button is="emby-button" type="button" id="btnNext" class="raised button-alt"><span>Next &raquo;</span></button>
@@ -61,6 +62,15 @@
         var searchTimer = null;
 
         var state = { filter: 'active', search: '', startIndex: 0, limit: 50 };
+
+        // The live cells of each rendered row, keyed by job id, so a poll can tick the progress bar and
+        // the ETA without touching the rest of the table.
+        var rows = {};
+
+        // Only the newest request may paint. Prev/Next fire a load while the 2s poll may already have one
+        // in flight, and if the older response lands second the table shows one page's rows under the
+        // other page's "Showing 51-100 of 120".
+        var requestSeq = 0;
 
         function api(method, path, body) {
             var opts = { type: method, url: ApiClient.getUrl('PreTranscode/' + path), dataType: method === 'GET' ? 'json' : undefined };
@@ -119,28 +129,53 @@
         }
 
         function renderJobs(jobs, paused) {
+            // The structure is which rows exist and everything about them that is not a ticking number.
+            // Only a change here earns a rebuild; the progress bar, elapsed time and ETA are refreshed in
+            // place afterwards. The old signature folded Date.now() in as soon as anything was encoding,
+            // so <tbody> was wiped and rebuilt on every 2s poll: that destroyed text selection and the
+            // scroll position inside an expanded ffmpeg log, and it moved the buttons under the pointer
+            // between mousedown and mouseup — a click aimed at one row's Cancel could land on the next
+            // row's Remove, which deletes a record with no prompt.
+            var sig = JSON.stringify([paused ? 1 : 0, jobs.map(function (j) {
+                return [j.Id, j.Status, j.StatusDetail, j.ErrorMessage, j.LogExcerpt, j.OutputPath];
+            })]);
+
+            if (sig !== lastSig) {
+                lastSig = sig;
+                rebuildJobs(jobs, paused);
+            }
+
+            refreshVolatile(jobs, paused);
+        }
+
+        // Ticks only what changes between polls, on the rows that already exist.
+        function refreshVolatile(jobs, paused) {
+            jobs.forEach(function (job) {
+                var row = rows[job.Id];
+                if (!row) { return; }
+
+                if (row.time) { row.time.textContent = timeInfo(job); }
+
+                if (job.Status === 'Processing' && row.bar) {
+                    var pct = job.Progress || 0;
+                    row.bar.style.width = pct + '%';
+                    row.pct.textContent = paused ? (pct.toFixed(1) + '% · paused') : (pct.toFixed(1) + '%');
+                }
+            });
+        }
+
+        function rebuildJobs(jobs, paused) {
             var body = document.getElementById('jobsBody');
 
-            // Skip the rebuild when nothing visible changed, so an open ffmpeg-log panel and any text
-            // selection inside it survive the 2s poll instead of being destroyed and recreated.
-            // While any job on this page is processing, refresh every poll so the progress bar, elapsed
-            // time and ETA keep ticking: keying only on the whole-number percent froze the row on a slow
-            // (e.g. 4K) encode, where progress moves less than 1% between polls.
-            var anyProcessing = jobs.some(function (j) { return j.Status === 'Processing'; });
-            var sig = JSON.stringify([paused ? 1 : 0, anyProcessing ? Date.now() : 0, jobs.map(function (j) {
-                return [j.Id, j.Status, j.Progress || 0, j.StatusDetail, j.ErrorMessage, j.LogExcerpt, j.OutputPath];
-            })]);
-            if (sig === lastSig) { return; }
-            lastSig = sig;
-
-            // When a rebuild is unavoidable (e.g. another job's progress moved), remember which log
-            // panels were expanded so they can be re-expanded afterwards rather than snapping shut.
+            // Remember which log panels were expanded so they can be re-expanded afterwards rather than
+            // snapping shut.
             var open = {};
             body.querySelectorAll('details[data-log-id]').forEach(function (d) {
                 if (d.open) { open[d.getAttribute('data-log-id')] = true; }
             });
 
             body.innerHTML = '';
+            rows = {};
             document.getElementById('empty').style.display = jobs.length ? 'none' : '';
 
             jobs.forEach(function (job) {
@@ -165,24 +200,37 @@
                     var pctText = pct.toFixed(1);
                     var pctLabel = paused ? (pctText + '% · paused') : (pctText + '%');
                     bar = '<div style="background:rgba(128,128,128,.25);border-radius:4px;overflow:hidden;height:1.1em;">'
-                        + '<div style="background:' + barColor + ';height:100%;width:' + pct + '%;"></div></div><div class="fieldDescription">' + pctLabel + '</div>';
+                        + '<div class="ptBar" style="background:' + barColor + ';height:100%;width:' + pct + '%;"></div></div>'
+                        + '<div class="fieldDescription ptPct">' + pctLabel + '</div>';
                 } else if (job.Status === 'Completed') {
                     bar = '<span class="fieldDescription">→ ' + esc(job.OutputPath) + '</span>';
                 }
                 var progressCell = '<td style="padding:0.4em;">' + bar + '</td>';
 
-                var timeCell = '<td style="padding:0.4em;"><span class="fieldDescription">' + esc(timeInfo(job)) + '</span></td>';
+                var timeCell = '<td style="padding:0.4em;"><span class="fieldDescription ptTime">' + esc(timeInfo(job)) + '</span></td>';
 
                 tr.innerHTML = itemCell + statusCell + progressCell + timeCell + '<td style="padding:0.4em;" class="actions"></td>';
 
                 var actions = tr.querySelector('.actions');
                 if (job.Status === 'Pending' || job.Status === 'Processing') {
-                    actions.appendChild(actionButton('Cancel', function () { api('POST', 'Jobs/' + job.Id + '/Cancel').then(load); }));
+                    actions.appendChild(actionButton('Cancel', function () { act('POST', 'Jobs/' + job.Id + '/Cancel'); }));
                 }
                 if (job.Status === 'Failed' || job.Status === 'Cancelled' || job.Status === 'Completed' || job.Status === 'Skipped') {
-                    actions.appendChild(actionButton('Requeue', function () { api('POST', 'Jobs/' + job.Id + '/Requeue').then(load); }));
+                    actions.appendChild(actionButton('Requeue', function () { act('POST', 'Jobs/' + job.Id + '/Requeue'); }));
                 }
-                actions.appendChild(actionButton('Remove', function () { api('DELETE', 'Jobs/' + job.Id).then(load); }));
+                // Confirmed, unlike Cancel and Requeue: this deletes the record that says the source was
+                // already transcoded, so a later sweep can pick the file up and encode it all over again.
+                actions.appendChild(actionButton('Remove', function () {
+                    if (window.confirm('Delete this job record? The source can then be picked up by a later sweep and transcoded again.')) {
+                        act('DELETE', 'Jobs/' + job.Id);
+                    }
+                }));
+
+                rows[job.Id] = {
+                    bar: tr.querySelector('.ptBar'),
+                    pct: tr.querySelector('.ptPct'),
+                    time: tr.querySelector('.ptTime')
+                };
 
                 body.appendChild(tr);
             });
@@ -200,8 +248,12 @@
 
         function syncTabs() {
             [['active', 'tabActive'], ['finished', 'tabFinished'], ['all', 'tabAll']].forEach(function (pair) {
+                // classList, not className: jellyfin-web's emby-button upgrade adds its own "emby-button"
+                // class in createdCallback, and that class carries the whole button layout. Assigning
+                // className wiped it, and the component's re-entry guard never puts it back — the three
+                // tabs rendered visibly smaller and mis-aligned next to Refresh.
                 var el = document.getElementById(pair[1]);
-                el.className = state.filter === pair[0] ? 'raised' : 'raised button-alt';
+                el.classList.toggle('button-alt', state.filter !== pair[0]);
             });
             document.getElementById('pageTitle').textContent = titleFor(state.filter);
         }
@@ -212,27 +264,55 @@
                 + '&startIndex=' + state.startIndex
                 + '&limit=' + state.limit;
 
+            var seq = ++requestSeq;
+            var forIndex = state.startIndex;
+
             return api('GET', q).then(function (res) {
+                // Drop a response that a newer request has already overtaken. Prev/Next fire a load while
+                // the 2s poll may have one in flight, and the older answer landing second painted one
+                // page's rows under the other page's "Showing 51-100 of 120".
+                if (seq !== requestSeq) { return; }
+
                 res = res || {};
                 var items = res.Items || [];
                 var total = res.TotalRecordCount || 0;
 
                 // A page whose jobs were trimmed or removed underneath it comes back empty; step back to
                 // the last page that still has rows rather than stranding the reader on a blank table.
-                if (!items.length && state.startIndex > 0 && total > 0) {
+                if (!items.length && forIndex > 0 && total > 0) {
                     state.startIndex = Math.max(0, (Math.ceil(total / state.limit) - 1) * state.limit);
                     return load();
                 }
 
                 renderJobs(items, res.IsPaused);
 
-                var first = total ? state.startIndex + 1 : 0;
-                var last = state.startIndex + items.length;
+                var first = total ? forIndex + 1 : 0;
+                var last = forIndex + items.length;
+                setError('');
                 document.getElementById('range').textContent = total
                     ? ('Showing ' + first + '–' + last + ' of ' + total)
                     : 'No matching jobs';
-                document.getElementById('btnPrev').disabled = state.startIndex <= 0;
+                document.getElementById('btnPrev').disabled = forIndex <= 0;
                 document.getElementById('btnNext').disabled = last >= total;
+            }, function () {
+                // Without this the promise rejected unhandled every 2s and the page went on showing the
+                // last good answer for ever — or, if it never got one, sat on "Loading…" looking mid-load.
+                if (seq !== requestSeq) { return; }
+                setError('Could not reach the server — showing the last data received. Retrying…');
+            });
+        }
+
+        function setError(text) {
+            var el = document.getElementById('loadError');
+            el.textContent = text;
+            el.style.display = text ? '' : 'none';
+        }
+
+        // Every row action: report the failure instead of leaving the row untouched and unexplained.
+        function act(method, path) {
+            return api(method, path).then(load, function () {
+                setError('That action failed — the job may already have finished or been removed.');
+                load();
             });
         }
 

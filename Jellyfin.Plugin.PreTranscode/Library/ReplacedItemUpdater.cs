@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.PreTranscode.Encoding;
@@ -112,11 +113,13 @@ internal sealed class ReplacedItemUpdater
                     var item = _libraryManager.GetItemById(replaced!.Id) as Video ?? replaced;
 
                     item.Path = finalPath;
+                    ClearStaleFileFacts(item, finalPath);
 
-                    // DateModified is deliberately NOT refreshed to the new file's timestamp. Jellyfin's
-                    // ffprobe provider decides whether to re-read a file by comparing it against the
-                    // file's own write time, so leaving it stale is what makes the queued refresh below
-                    // actually re-probe rather than skip.
+                    // DateModified is deliberately NOT refreshed to the new file's timestamp. What decides
+                    // whether the file is re-read is BaseItem.RequiresRefresh(), which compares the
+                    // recorded DateModified against the file's own write time and is captured by
+                    // MetadataService before BeforeSave overwrites it; a stale value there is what makes
+                    // runAllProviders true and sends the queued refresh below to ffprobe.
                     await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataImport, cancellationToken).ConfigureAwait(false);
 
                     _logger.LogInformation(
@@ -165,10 +168,51 @@ internal sealed class ReplacedItemUpdater
         return pathChanged ? ReplacedItemAction.RepointAndReprobe : ReplacedItemAction.Reprobe;
     }
 
-    // Default rather than FullRefresh on purpose: the local ffprobe provider re-reads the file because its
-    // recorded write time no longer matches the one on disk, which is exactly the case after a transcode,
-    // while the remote metadata providers are not sent off to re-identify a title that has not changed.
-    // Images are validated rather than refreshed, so existing artwork is neither re-downloaded nor lost.
+    /// <summary>
+    /// Corrects, in the same save as the path, the two facts about the file that the queued re-probe
+    /// will not put right on its own.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>Container</c> is cleared rather than guessed. Jellyfin stores it as ffprobe's own comma list
+    /// ("mkv,webm"), which cannot be derived from an extension, but <c>BaseItem.GetVersionInfo</c> falls
+    /// back to the file's extension whenever the stored value is empty — so clearing it is right
+    /// immediately, where leaving it was wrong until the refresh landed. That window mattered: replacing
+    /// Movie.mp4 (H.264) with Movie.mkv (HEVC) left the database saying "mp4/h264", and Jellyfin will
+    /// green-light direct play to a client that cannot decode what is actually in the file. Before the
+    /// repoint the same window produced an obvious file-not-found; a silent wrong-codec negotiation is
+    /// worse, so it must not outlive the save.
+    /// </para>
+    /// <para>
+    /// <c>Size</c> is written because nothing else ever will. On 10.11 the media probe only assigns it
+    /// for BluRay and DVD folders, and a library scan keeps the existing row rather than the freshly
+    /// resolved one — so after shrinking a 20 GB file to 4 GB, every client would keep being told 20 GB
+    /// indefinitely.
+    /// </para>
+    /// </remarks>
+    /// <param name="item">The item being repointed.</param>
+    /// <param name="finalPath">The file it now points at.</param>
+    private static void ClearStaleFileFacts(BaseItem item, string finalPath)
+    {
+        item.Container = null;
+
+        try
+        {
+            item.Size = new FileInfo(finalPath).Length;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Unreadable size is not worth failing the repoint over; the old value is no more wrong than
+            // it already was.
+            item.Size = null;
+        }
+    }
+
+    // Default rather than FullRefresh on purpose: FullRefresh would also replace metadata wholesale.
+    // Default still runs every provider here — the stale DateModified makes runAllProviders true — so the
+    // ffprobe re-read happens, at the cost of one remote metadata lookup per replaced file on Jellyfin's
+    // serial refresh queue. Images are validated rather than refreshed, so existing artwork is neither
+    // re-downloaded nor lost.
     private void QueueReprobe(BaseItem item)
     {
         var options = new MetadataRefreshOptions(new DirectoryService(_fileSystem))
