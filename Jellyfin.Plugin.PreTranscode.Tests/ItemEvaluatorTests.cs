@@ -85,6 +85,40 @@ public class ItemEvaluatorTests
         Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => true, 3));
     }
 
+    // Replace-in-place with a container change renames the file, so the finished job records the OLD
+    // name and the file that now exists has no record of its own. Matching only on the source path, the
+    // next sweep saw an unfamiliar file, matched the same size/codec rule again, and re-encoded the
+    // previous encode — a generation lost per sweep for as long as it stayed over the threshold.
+    [Fact]
+    public void AlreadyHandled_TrueWhenThePathIsAPreviousRunsOutput()
+    {
+        var jobs = new[] { Job("/Movie.mp4", "p1", JobStatus.Completed, "/Movie.mkv") };
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/Movie.mkv", "p1", _ => true, 3));
+    }
+
+    [Fact]
+    public void AlreadyHandled_OutputRecognitionIsCaseInsensitiveAndProfileScoped()
+    {
+        var jobs = new[] { Job("/Movie.mp4", "p1", JobStatus.Completed, "/Movie.mkv") };
+
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/MOVIE.MKV", "p1", _ => true, 3));
+
+        // A different profile transcoding this file is a legitimate chain, not the loop above.
+        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/Movie.mkv", "p2", _ => true, 3));
+    }
+
+    [Fact]
+    public void AlreadyHandled_UnfinishedJobsOutputDoesNotCount()
+    {
+        // A job that failed or is still running has not produced anything to recognise.
+        var jobs = new[]
+        {
+            Job("/Movie.mp4", "p1", JobStatus.Failed, "/Movie.mkv"),
+            Job("/Other.mp4", "p1", JobStatus.Processing, "/Movie.mkv")
+        };
+        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/Movie.mkv", "p1", _ => true, 0));
+    }
+
     [Fact]
     public void AlreadyHandled_FalseForDifferentProfileOrSource()
     {

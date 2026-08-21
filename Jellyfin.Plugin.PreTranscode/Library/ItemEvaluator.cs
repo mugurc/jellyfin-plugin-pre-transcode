@@ -337,15 +337,32 @@ public sealed class ItemEvaluator
         var failed = 0;
         foreach (var job in jobs)
         {
-            if (!string.Equals(job.SourcePath, sourcePath, StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(job.ProfileId, profileId, StringComparison.Ordinal))
+            if (!string.Equals(job.ProfileId, profileId, StringComparison.Ordinal))
             {
                 continue;
             }
 
-            if ((job.Status == JobStatus.Completed || job.Status == JobStatus.Skipped)
-                && !string.IsNullOrEmpty(job.OutputPath)
-                && outputExists(job.OutputPath))
+            var done = job.Status == JobStatus.Completed || job.Status == JobStatus.Skipped;
+
+            // This path IS the output a previous run produced. Replace-in-place with a profile container
+            // that differs from the source's extension renames the file, so the finished job records the
+            // old name (Movie.mp4) and the file that now exists (Movie.mkv) has no record of its own.
+            // Matching only on the source path, the next sweep saw an unfamiliar file, matched the same
+            // size/codec rule that started all this, and re-encoded the previous encode — losing a
+            // generation every sweep, for as long as the file stayed over the threshold. Recognising the
+            // output by name closes that. Scoped to the same profile, like the check below: a different
+            // profile transcoding this file is a legitimate chain, not a loop.
+            if (done && string.Equals(job.OutputPath, sourcePath, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (!string.Equals(job.SourcePath, sourcePath, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (done && !string.IsNullOrEmpty(job.OutputPath) && outputExists(job.OutputPath))
             {
                 return true;
             }
