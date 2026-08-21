@@ -56,7 +56,7 @@
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="MaxFinishedJobsKept" title="Queue history size">Finished jobs to keep</label>
                         <input id="MaxFinishedJobsKept" type="number" is="emby-input" min="0" max="100000" />
-                        <div class="fieldDescription"><b>0 = keep everything</b> (the default). The whole queue is rewritten on every status update, so a history that only grows makes each write slower. Note that a forgotten job no longer records that its source was transcoded &mdash; with the <i>Replace in place</i> policy, that source can be picked up again by a later sweep if it still matches your rules.</div>
+                        <div class="fieldDescription"><b>0 = keep everything</b> (the default). The whole queue is written out in one file, so a history that only grows makes each write bigger &mdash; around 33 MB and 95 ms at 50,000 jobs. Writes are batched, so this costs throughput rather than responsiveness, but a cap is still worth setting on a very large library. Note that a forgotten job no longer records that its source was transcoded &mdash; with the <i>Replace in place</i> policy, that source can be picked up again by a later sweep if it still matches your rules.</div>
                     </div>
                     <div class="selectContainer">
                         <label class="selectLabel" for="DefaultProfileId">Default profile</label>

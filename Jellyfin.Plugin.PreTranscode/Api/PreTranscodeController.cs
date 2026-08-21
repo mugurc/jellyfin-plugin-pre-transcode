@@ -403,12 +403,15 @@ public class PreTranscodeController : ControllerBase
     [ProducesResponseType(StatusCodes.Status200OK)]
     public ActionResult<object> CancelAllJobs()
     {
-        var active = _queue.GetJobs()
-            .Where(j => j.Status == JobStatus.Pending || j.Status == JobStatus.Processing)
-            .ToList();
+        // Pending first, in one pass and one write: going through CancelJob per job rewrote the whole
+        // queue file every time, so cancelling a large backlog cost one multi-megabyte write per job.
+        // Doing it first also means the worker cannot claim a fresh job while the running ones are being
+        // aborted below.
+        var cancelled = _queue.CancelAllPending();
 
-        var cancelled = 0;
-        foreach (var job in active)
+        // The running ones still go one at a time: only the queue processor can abort a live ffmpeg, and
+        // there are never more than the configured concurrency of them.
+        foreach (var job in _queue.GetJobs().Where(j => j.Status == JobStatus.Processing).ToList())
         {
             if (_queueController.CancelJob(job.Id))
             {

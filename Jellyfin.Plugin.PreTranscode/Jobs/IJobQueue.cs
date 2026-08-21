@@ -58,6 +58,18 @@ public interface IJobQueue
     bool Cancel(string id);
 
     /// <summary>
+    /// Cancels every still-pending job in one pass, and persists the result once.
+    /// <para>
+    /// "Cancel all" used to call <see cref="Cancel"/> per job, and every one of those rewrote the whole
+    /// queue file — on a large backlog that is one multi-megabyte write per cancelled job. Jobs that are
+    /// already <see cref="JobStatus.Processing"/> are not touched here: aborting a running encode is the
+    /// queue processor's job, and there are only ever a handful of those.
+    /// </para>
+    /// </summary>
+    /// <returns>How many jobs were cancelled.</returns>
+    int CancelAllPending();
+
+    /// <summary>
     /// Resets a finished job back to pending so it will be retried.
     /// </summary>
     /// <param name="id">The job id.</param>
