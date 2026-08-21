@@ -95,38 +95,59 @@ internal static class JobQuery
     }
 
     /// <summary>
-    /// The three short lists the control-center page shows instead of the whole queue: what is running,
-    /// what runs next, and what finished most recently.
+    /// Everything the control-center page shows, from a single walk of the list: the per-status counts,
+    /// what is running, what runs next, and what finished most recently.
+    /// <para>
+    /// Counting and slicing in one pass is not just cheaper, it is the only way the two can agree.
+    /// Counting first and slicing afterwards let an encode finish in between, and the page then drew
+    /// "Processing: 1" directly above "Idle — nothing is encoding right now" until the next poll.
+    /// </para>
     /// </summary>
     /// <param name="jobs">The full job list.</param>
     /// <param name="upNextCount">How many pending jobs to preview.</param>
     /// <param name="recentCount">How many finished jobs to preview.</param>
-    /// <returns>The three slices.</returns>
-    internal static (IReadOnlyList<TranscodeJob> Processing, IReadOnlyList<TranscodeJob> UpNext, IReadOnlyList<TranscodeJob> Recent) Overview(
+    /// <returns>The counts and the three slices.</returns>
+    internal static (JobCounts Counts, IReadOnlyList<TranscodeJob> Processing, IReadOnlyList<TranscodeJob> UpNext, IReadOnlyList<TranscodeJob> Recent) Overview(
         IReadOnlyList<TranscodeJob> jobs,
         int upNextCount,
         int recentCount)
     {
+        var processing = new List<TranscodeJob>();
+        var pending = new List<TranscodeJob>();
+        var finished = new List<TranscodeJob>();
+        int completed = 0, failed = 0, cancelled = 0, skipped = 0;
+
+        foreach (var job in jobs)
+        {
+            // Read once. The executor mutates these very instances while this runs, so re-reading Status
+            // in a later pass can put one job in two buckets at once — running AND recently finished.
+            var status = job.Status;
+            switch (status)
+            {
+                case JobStatus.Pending: pending.Add(job); break;
+                case JobStatus.Processing: processing.Add(job); break;
+                case JobStatus.Completed: finished.Add(job); completed++; break;
+                case JobStatus.Failed: finished.Add(job); failed++; break;
+                case JobStatus.Cancelled: finished.Add(job); cancelled++; break;
+                case JobStatus.Skipped: finished.Add(job); skipped++; break;
+                default: break;
+            }
+        }
+
+        var counts = new JobCounts(pending.Count, processing.Count, completed, failed, cancelled, skipped, jobs.Count);
+
         // Every running job is listed, not the first N: with a concurrency of 2 or more, hiding one of
         // them would leave the page claiming less work is happening than really is.
-        var processing = jobs
-            .Where(j => j.Status == JobStatus.Processing)
-            .OrderBy(j => j.StartedUtc ?? j.CreatedUtc)
-            .ToList();
+        processing.Sort((a, b) => (a.StartedUtc ?? a.CreatedUtc).CompareTo(b.StartedUtc ?? b.CreatedUtc));
 
-        var upNext = jobs
-            .Where(j => j.Status == JobStatus.Pending)
-            .OrderBy(j => j.CreatedUtc)
-            .Take(Math.Max(upNextCount, 0))
-            .ToList();
-
-        var recent = jobs
-            .Where(j => IsFinished(j.Status))
-            .OrderByDescending(j => j.FinishedUtc ?? j.CreatedUtc)
-            .Take(Math.Max(recentCount, 0))
-            .ToList();
-
-        return (processing, upNext, recent);
+        return (
+            counts,
+            processing,
+            pending.OrderBy(j => j.CreatedUtc).Take(Math.Max(upNextCount, 0)).ToList(),
+            finished.OrderByDescending(j => j.FinishedUtc ?? j.CreatedUtc)
+                .ThenByDescending(j => j.CreatedUtc)
+                .Take(Math.Max(recentCount, 0))
+                .ToList());
     }
 
     /// <summary>
@@ -155,14 +176,15 @@ internal static class JobQuery
         return new JobCounts(pending, processing, completed, failed, cancelled, skipped, jobs.Count);
     }
 
-    private static List<TranscodeJob> Match(IReadOnlyList<TranscodeJob> jobs, JobFilter filter, string? search)
+    private static List<Snapshot> Match(IReadOnlyList<TranscodeJob> jobs, JobFilter filter, string? search)
     {
         var term = (search ?? string.Empty).Trim();
-        var matched = new List<TranscodeJob>();
+        var matched = new List<Snapshot>();
 
         foreach (var job in jobs)
         {
-            var finished = IsFinished(job.Status);
+            var status = job.Status;
+            var finished = IsFinished(status);
             if ((filter == JobFilter.Active && finished) || (filter == JobFilter.Finished && !finished))
             {
                 continue;
@@ -177,7 +199,7 @@ internal static class JobQuery
                 continue;
             }
 
-            matched.Add(job);
+            matched.Add(new Snapshot(job, status));
         }
 
         return matched;
@@ -186,16 +208,38 @@ internal static class JobQuery
     // The live queue reads as a running order — what is encoding, then what is next, oldest first, which
     // is the order ClaimNextPending really picks them in. History reads as a log, newest first. "All"
     // is both, in that order, so the top of the list is always the part that is still moving.
-    private static List<TranscodeJob> Order(List<TranscodeJob> matched, JobFilter filter)
+    // Ties on FinishedUtc fall back to newest-queued first, so History keeps the order its title
+    // promises. They are not rare: "Cancel all" stamps one instant into every pending job at once, and
+    // without the tiebreak a stable sort resolved that block to insertion order — 50,000 cancelled jobs
+    // listed OLDEST first on a newest-first tab, with the most recent one a thousand pages in.
+    // Pending is deliberately left on CreatedUtc alone: a stable sort resolves those ties to list order,
+    // which is exactly the job ClaimNextPending's MinBy picks, and any extra tiebreak here would make the
+    // page promise a running order the executor does not follow.
+    private static List<TranscodeJob> Order(List<Snapshot> matched, JobFilter filter)
     {
         if (filter == JobFilter.Finished)
         {
-            return matched.OrderByDescending(j => j.FinishedUtc ?? j.CreatedUtc).ToList();
+            return matched
+                .OrderByDescending(s => s.Job.FinishedUtc ?? s.Job.CreatedUtc)
+                .ThenByDescending(s => s.Job.CreatedUtc)
+                .Select(s => s.Job)
+                .ToList();
         }
 
-        return matched.Where(j => j.Status == JobStatus.Processing).OrderBy(j => j.StartedUtc ?? j.CreatedUtc)
-            .Concat(matched.Where(j => j.Status == JobStatus.Pending).OrderBy(j => j.CreatedUtc))
-            .Concat(matched.Where(j => IsFinished(j.Status)).OrderByDescending(j => j.FinishedUtc ?? j.CreatedUtc))
+        return matched.Where(s => s.Status == JobStatus.Processing).OrderBy(s => s.Job.StartedUtc ?? s.Job.CreatedUtc)
+            .Concat(matched.Where(s => s.Status == JobStatus.Pending).OrderBy(s => s.Job.CreatedUtc))
+            .Concat(matched.Where(s => IsFinished(s.Status))
+                .OrderByDescending(s => s.Job.FinishedUtc ?? s.Job.CreatedUtc)
+                .ThenByDescending(s => s.Job.CreatedUtc))
+            .Select(s => s.Job)
             .ToList();
     }
+
+    // A job paired with the status it had when this query started. The queue hands out the live
+    // TranscodeJob instances and the executor mutates them in place, so a status re-read in a later pass
+    // can disagree with the first one: a job that finishes mid-query was emitted by the "processing" pass
+    // AND by the "finished" pass — the same title twice on one page, with a total one too high — while a
+    // job claimed mid-query fell between the "pending" and "processing" passes and appeared on no page at
+    // all. Reading it once, here, is what makes each job land in exactly one bucket.
+    private readonly record struct Snapshot(TranscodeJob Job, JobStatus Status);
 }

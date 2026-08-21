@@ -133,14 +133,26 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
         }
     }
 
+    // The paused flag is written INSIDE _suspendLock, and so is every change to _suspended. They are one
+    // piece of state and were previously updated separately, which let them disagree:
+    //
+    //   * Resume cleared _suspended and released the lock, then an encode that was still starting took
+    //     the lock, read the not-yet-cleared flag, and suspended itself into a set nobody would ever
+    //     drain again — SIGSTOPped for ever, holding an _inFlight slot, with the queue reporting itself
+    //     as running. At a concurrency of 1 that is the whole queue, permanently stalled.
+    //   * Pause set the flag and was preempted before taking the lock; a Resume that slipped in between
+    //     found nothing to resume and cleared the flag, after which Pause froze every running encode
+    //     anyway. Same permanent stall, reachable by double-clicking Pause/Resume or from two browser
+    //     tabs.
+    //
+    // Holding the lock across both makes the start-time hook — which reads the flag under the same lock —
+    // see a flag and a set that always agree. _suspended.Add still gates each suspend, so no process can
+    // be suspended twice and be left frozen after a single Resume.
     public void Pause()
     {
-        // Stop claiming new jobs first, then freeze whatever is already running. _suspended.Add gates each
-        // suspend so pressing Pause twice (or racing StartJob's start-time suspend) cannot double-suspend a
-        // process and leave it frozen after a single Resume.
-        _queue.IsPaused = true;
         lock (_suspendLock)
         {
+            _queue.IsPaused = true;
             foreach (var (id, process) in _activeProcesses)
             {
                 if (_suspended.Add(id))
@@ -155,10 +167,9 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
 
     public void Resume()
     {
-        // Unfreeze running encodes before allowing new ones to be claimed. Only resume what we actually
-        // suspended, exactly once each, then clear the set.
         lock (_suspendLock)
         {
+            // Unfreeze what we actually suspended, exactly once each, before letting the loop claim more.
             foreach (var id in _suspended)
             {
                 if (_activeProcesses.TryGetValue(id, out var process))
@@ -168,9 +179,9 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
             }
 
             _suspended.Clear();
+            _queue.IsPaused = false;
         }
 
-        _queue.IsPaused = false;
         PersistPaused(false);
     }
 

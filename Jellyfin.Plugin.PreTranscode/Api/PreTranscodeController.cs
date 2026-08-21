@@ -144,9 +144,10 @@ public class PreTranscodeController : ControllerBase
     [ProducesResponseType(StatusCodes.Status200OK)]
     public ActionResult<object> GetQueueOverview([FromQuery] int upNext = 3, [FromQuery] int recent = 3)
     {
-        var jobs = _queue.GetJobs();
-        var counts = JobQuery.Count(jobs);
-        var (processing, next, finished) = JobQuery.Overview(jobs, Math.Clamp(upNext, 0, 25), Math.Clamp(recent, 0, 25));
+        // Counts and slices come from one walk. Counting separately let an encode finish in between, and
+        // the page then drew "Processing: 1" directly above "Idle — nothing is encoding right now".
+        var (counts, processing, next, finished) = JobQuery.Overview(
+            _queue.GetJobs(), Math.Clamp(upNext, 0, 25), Math.Clamp(recent, 0, 25));
 
         return Ok(new
         {

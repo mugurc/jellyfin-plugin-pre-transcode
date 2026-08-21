@@ -338,4 +338,23 @@ public class FfmpegCommandBuilderTests
         Assert.Contains("force_original_aspect_ratio=decrease", cmd);
         Assert.Contains("force_divisible_by=2", cmd);
     }
+
+    // Cover art is a "video" stream with attached_pic=1, and in mp4/mov it is routinely stream #0:0.
+    // MediaProber skips those when deciding what the file is, so mapping 0:v:0 made ffmpeg encode the
+    // poster thumbnail while the prober had matched a rule on the real video track — and with only a
+    // duration check standing between that and Replace-in-place, the film was replaced by a still image.
+    [Fact]
+    public void VideoMapExcludesAttachedCoverArt()
+    {
+        var args = FfmpegCommandBuilder.BuildArguments(
+            new EncodingProfile { VideoEncoder = "libx265", AudioCodec = "copy", Container = "matroska" },
+            new MediaProbeInfo { VideoCodec = "h264", Width = 1920, Height = 1080, Container = "mov,mp4" },
+            new List<ResolutionPreset>(),
+            "/media/Movie.mp4",
+            "/tmp/out.mkv",
+            Array.Empty<string>());
+
+        Assert.Contains("0:V:0", args, StringComparer.Ordinal);
+        Assert.DoesNotContain("0:v:0", args, StringComparer.Ordinal);
+    }
 }

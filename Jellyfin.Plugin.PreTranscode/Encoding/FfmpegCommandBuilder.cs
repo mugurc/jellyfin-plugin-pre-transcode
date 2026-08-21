@@ -42,8 +42,16 @@ internal static class FfmpegCommandBuilder
         var mkvLike = IsMatroska(profile.Container);
         var mp4Like = IsMp4Like(profile.Container);
 
+        // "0:V:0", not "0:v:0". Lowercase v matches every video stream INCLUDING an attached picture —
+        // embedded cover art, which in mp4/mov is routinely stream #0:0. MediaProber deliberately skips
+        // attached_pic streams when it decides what this file is, so the two disagreed: the prober read
+        // the real 1080p h264 track and matched a rule on it, while ffmpeg encoded the 600x900 poster
+        // thumbnail as the video and carried the full-length audio alongside it. The result muxes and
+        // exits 0, and OutputVerifier only compares duration — which the audio track satisfies — so under
+        // Replace in place the original film was deleted and replaced by a still image with sound.
+        // Uppercase V is the specifier that excludes attached pictures.
         args.Add("-map");
-        args.Add("0:v:0");
+        args.Add("0:V:0");
         args.Add("-map");
         args.Add("0:a?");
         if (mkvLike && !IsWebm(profile.Container))

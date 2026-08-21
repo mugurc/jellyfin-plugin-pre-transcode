@@ -128,11 +128,16 @@ public class JobQueryTests
         var jobs = Sample();
         jobs.Add(Job("running-2", JobStatus.Processing, 7));
 
-        var (processing, upNext, recent) = JobQuery.Overview(jobs, 1, 2);
+        var (counts, processing, upNext, recent) = JobQuery.Overview(jobs, 1, 2);
 
         Assert.Equal(new[] { "running", "running-2" }, Names(processing));
         Assert.Equal(new[] { "pending-a" }, Names(upNext));
         Assert.Equal(new[] { "failed-new", "skipped" }, Names(recent));
+
+        // The counts come from the same walk as the slices, so they cannot contradict them. Counting
+        // separately let an encode finish in between and the page drew "Processing: 1" above
+        // "Idle — nothing is encoding right now".
+        Assert.Equal(processing.Count, counts.Processing);
     }
 
     [Fact]
@@ -161,5 +166,75 @@ public class JobQueryTests
         Assert.Equal(JobFilter.All, JobQuery.ParseFilter(string.Empty));
         Assert.Equal(JobFilter.All, JobQuery.ParseFilter(null));
         Assert.Equal(JobFilter.All, JobQuery.ParseFilter("nonsense"));
+    }
+
+    // "Cancel all" stamps one instant into every pending job at once. Without a tiebreak a stable sort
+    // resolved that block to insertion order — the OLDEST cancelled job first, on a newest-first tab.
+    [Fact]
+    public void History_TiesOnFinishedTime_FallBackToNewestQueuedFirst()
+    {
+        var sameInstant = 500;
+        var jobs = new List<TranscodeJob>
+        {
+            Job("queued-first", JobStatus.Cancelled, 1, sameInstant),
+            Job("queued-second", JobStatus.Cancelled, 2, sameInstant),
+            Job("queued-third", JobStatus.Cancelled, 3, sameInstant)
+        };
+
+        var (items, _) = JobQuery.Page(jobs, JobFilter.Finished, null, 0, 50);
+
+        Assert.Equal(new[] { "queued-third", "queued-second", "queued-first" }, Names(items));
+    }
+
+    // Each job's status is read once, when the query starts. The queue hands out the live job objects and
+    // the executor mutates them in place, so a status re-read in a later pass could put one job in two
+    // buckets at once (listed twice, total one too high) or in none (never shown on any page). The
+    // enumeration below flips a job the moment the query reads it, which is the closest a test can get to
+    // that interleaving.
+    [Fact]
+    public void JobStatusIsReadOncePerQuery()
+    {
+        var running = Job("running", JobStatus.Processing, 0);
+        var jobs = new FlipsWhileEnumerated(new List<TranscodeJob> { running, Job("pending", JobStatus.Pending, 1) }, running);
+
+        var (items, total) = JobQuery.Page(jobs, JobFilter.All, null, 0, 50);
+
+        // Read once: it stays in the running bucket for this query, exactly once, and the total matches.
+        Assert.Equal(new[] { "running", "pending" }, Names(items));
+        Assert.Equal(2, total);
+        Assert.Equal(JobStatus.Completed, running.Status);
+    }
+
+    // Flips the target job to Completed the instant the query has read it, mimicking an encode finishing
+    // underneath a request.
+    private sealed class FlipsWhileEnumerated : IReadOnlyList<TranscodeJob>
+    {
+        private readonly IReadOnlyList<TranscodeJob> _jobs;
+        private readonly TranscodeJob _target;
+
+        public FlipsWhileEnumerated(IReadOnlyList<TranscodeJob> jobs, TranscodeJob target)
+        {
+            _jobs = jobs;
+            _target = target;
+        }
+
+        public int Count => _jobs.Count;
+
+        public TranscodeJob this[int index] => _jobs[index];
+
+        public IEnumerator<TranscodeJob> GetEnumerator()
+        {
+            foreach (var job in _jobs)
+            {
+                yield return job;
+                if (ReferenceEquals(job, _target))
+                {
+                    job.Status = JobStatus.Completed;
+                    job.FinishedUtc = job.CreatedUtc.AddMinutes(1);
+                }
+            }
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 }
