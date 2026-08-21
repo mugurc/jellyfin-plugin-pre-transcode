@@ -70,6 +70,16 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
                 EmbeddedResourcePath = string.Format(CultureInfo.InvariantCulture, "{0}.Configuration.queuePage.html", ns),
                 EnableInMainMenu = true,
                 MenuIcon = "video_settings"
+            },
+            // The full job list, deliberately NOT in the main menu: it is reached from the control
+            // center's "Open full queue"/"Open full history" links, which pre-select its filter. Keeping
+            // the long list on its own page is what stops the day-to-day view from rendering a table
+            // hundreds of screens long on a large library.
+            new PluginPageInfo
+            {
+                Name = "PreTranscodeJobs",
+                DisplayName = "Pre-Transcode jobs",
+                EmbeddedResourcePath = string.Format(CultureInfo.InvariantCulture, "{0}.Configuration.jobsPage.html", ns)
             }
         ];
     }

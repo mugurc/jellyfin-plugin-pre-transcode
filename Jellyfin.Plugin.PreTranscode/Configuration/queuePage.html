@@ -11,7 +11,7 @@
         <div class="content-primary">
             <div class="verticalSection">
                 <div class="sectionTitleContainer flex align-items-center">
-                    <h2 class="sectionTitle">Pre-Transcode &mdash; Queue &amp; status</h2>
+                    <h2 class="sectionTitle">Pre-Transcode &mdash; Control center</h2>
                     <a is="emby-linkbutton" class="raised button-alt" href="#" id="lnkSettings" style="margin-left:1.5em;">
                         <span>&laquo; Settings</span>
                     </a>
@@ -22,10 +22,36 @@
                     <button is="emby-button" type="button" id="btnPause" class="raised button-alt"><span>Pause queue</span></button>
                     <button is="emby-button" type="button" id="btnResume" class="raised button-alt"><span>Resume queue</span></button>
                     <button is="emby-button" type="button" id="btnCancelAll" class="raised button-alt" title="Cancel every pending and processing job"><span>Cancel all</span></button>
-                    <button is="emby-button" type="button" id="btnClear" class="raised button-alt"><span>Clear finished</span></button>
+                    <button is="emby-button" type="button" id="btnClear" class="raised button-alt" title="Deletes the finished-job records. A source with no record can be picked up by a later sweep again."><span>Clear finished</span></button>
                     <button is="emby-button" type="button" id="btnRefresh" class="raised button-alt"><span>Refresh</span></button>
                 </div>
             </div>
+
+            <div class="verticalSection">
+                <h3 class="sectionTitle" style="margin-bottom:0.2em;">Now encoding</h3>
+                <div id="processing"></div>
+            </div>
+
+            <div class="verticalSection">
+                <div class="sectionTitleContainer flex align-items-center">
+                    <h3 class="sectionTitle" style="margin-bottom:0.2em;">Up next</h3>
+                    <a is="emby-linkbutton" class="raised button-alt" href="#" id="lnkQueue" style="margin-left:1.5em;">
+                        <span>Open full queue &raquo;</span>
+                    </a>
+                </div>
+                <div id="upNext"></div>
+            </div>
+
+            <div class="verticalSection">
+                <div class="sectionTitleContainer flex align-items-center">
+                    <h3 class="sectionTitle" style="margin-bottom:0.2em;">Recently finished</h3>
+                    <a is="emby-linkbutton" class="raised button-alt" href="#" id="lnkHistory" style="margin-left:1.5em;">
+                        <span>Open full history &raquo;</span>
+                    </a>
+                </div>
+                <div id="recent"></div>
+            </div>
+
             <div class="verticalSection">
                 <h3 class="sectionTitle" style="margin-bottom:0.2em;">Transcode a single item</h3>
                 <p class="fieldDescription">Search for a movie or episode and queue just that one, on demand &mdash; independent of the trigger rules and the automatic sweep. It is still skipped at run time if already compliant with the chosen profile.</p>
@@ -36,21 +62,6 @@
                 </div>
                 <div id="singleResults"></div>
                 <p class="fieldDescription" id="singleMsg" style="display:none;"></p>
-            </div>
-            <div class="verticalSection">
-                <table style="width:100%;border-collapse:collapse;" id="jobsTable">
-                    <thead>
-                        <tr style="text-align:left;border-bottom:1px solid rgba(128,128,128,.4);">
-                            <th style="padding:0.4em;">Item</th>
-                            <th style="padding:0.4em;width:9em;">Status</th>
-                            <th style="padding:0.4em;width:12em;">Progress</th>
-                            <th style="padding:0.4em;width:11em;">Time</th>
-                            <th style="padding:0.4em;width:12em;">Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="jobsBody"></tbody>
-                </table>
-                <p class="fieldDescription" id="empty" style="display:none;">No jobs yet. Jobs are added by the scheduled task, the library-scan hook, or the API.</p>
             </div>
         </div>
     </div>
@@ -104,103 +115,123 @@
             return finished ? 'took ' + fmtDuration((finished.getTime() - started.getTime()) / 1000) : '';
         }
 
-        function actionButton(label, cls, fn) {
-            var b = document.createElement('button');
-            b.setAttribute('is', 'emby-button');
-            b.type = 'button';
-            b.className = 'raised button-alt';
-            b.style.marginRight = '0.3em';
-            b.style.padding = '0.2em 0.6em';
-            b.innerHTML = '<span>' + label + '</span>';
-            b.addEventListener('click', fn);
-            return b;
+        function ago(job) {
+            var finished = parseUtc(job.FinishedUtc);
+            return finished ? fmtDuration((Date.now() - finished.getTime()) / 1000) + ' ago' : '';
         }
 
-        function renderJobs(jobs, paused) {
-            var body = document.getElementById('jobsBody');
+        function nameLine(job) {
+            return '<div>' + esc(job.DisplayName || job.SourcePath) + '</div>'
+                + '<div class="fieldDescription" style="word-break:break-all;">' + esc(job.SourcePath) + '</div>';
+        }
 
-            // Skip the rebuild when nothing visible changed, so an open ffmpeg-log panel and any text
-            // selection inside it survive the 2s poll instead of being destroyed and recreated.
-            // While any job is actively processing, refresh every poll so the progress bar, elapsed time
-            // and ETA keep ticking. Keying only on the whole-number percent froze the entire row on a slow
-            // (e.g. 4K) encode, where progress moves less than 1% between polls. When nothing is processing
-            // the signature is stable again, so an open ffmpeg-log panel and text selection are preserved.
-            var anyProcessing = jobs.some(function (j) { return j.Status === 'Processing'; });
-            var sig = JSON.stringify([paused ? 1 : 0, anyProcessing ? Date.now() : 0, jobs.map(function (j) {
-                return [j.Id, j.Status, j.Progress || 0, j.StatusDetail, j.ErrorMessage, j.LogExcerpt, j.OutputPath];
-            })]);
-            if (sig === lastSig) { return; }
-            lastSig = sig;
+        function moreLine(shown, total, label) {
+            var rest = total - shown;
+            return rest > 0 ? '<p class="fieldDescription">&hellip; and ' + rest + ' more ' + label + '.</p>' : '';
+        }
 
-            // When a rebuild is unavoidable (e.g. another job's progress moved), remember which log
-            // panels were expanded so they can be re-expanded afterwards rather than snapping shut.
-            var open = {};
-            body.querySelectorAll('details[data-log-id]').forEach(function (d) {
-                if (d.open) { open[d.getAttribute('data-log-id')] = true; }
-            });
+        function renderProcessing(jobs, paused) {
+            var host = document.getElementById('processing');
+            if (!jobs.length) {
+                host.innerHTML = '<p class="fieldDescription">' + (paused ? 'Paused — nothing is encoding.' : 'Idle — nothing is encoding right now.') + '</p>';
+                return;
+            }
 
-            body.innerHTML = '';
-            document.getElementById('empty').style.display = jobs.length ? 'none' : '';
-
+            host.innerHTML = '';
             jobs.forEach(function (job) {
-                var tr = document.createElement('tr');
-                tr.style.borderBottom = '1px solid rgba(128,128,128,.15)';
-
-                var name = job.DisplayName || job.SourcePath;
-                var detail = job.StatusDetail ? (' — ' + esc(job.StatusDetail)) : '';
-                var err = job.Status === 'Failed' && job.ErrorMessage ? '<div class="fieldDescription" style="color:#c33;">' + esc(job.ErrorMessage) + '</div>' : '';
-                var log = job.Status === 'Failed' && job.LogExcerpt
-                    ? '<details data-log-id="' + esc(job.Id) + '" style="margin-top:0.3em;"><summary class="fieldDescription" style="cursor:pointer;">Show ffmpeg output</summary>'
-                        + '<pre style="white-space:pre-wrap;word-break:break-word;font-size:0.85em;max-height:16em;overflow:auto;margin:0.3em 0 0;">'
-                        + esc(job.LogExcerpt) + '</pre></details>'
-                    : '';
-                var itemCell = '<td style="padding:0.4em;"><div>' + esc(name) + '</div><div class="fieldDescription">' + esc(job.SourcePath) + '</div>' + err + log + '</td>';
-                var statusCell = '<td style="padding:0.4em;">' + esc(job.Status) + detail + '</td>';
-
                 var pct = job.Progress || 0;
-                var bar = '';
-                if (job.Status === 'Processing') {
-                    var barColor = paused ? '#888' : '#00a4dc';
-                    var pctText = pct.toFixed(1);
-                    var pctLabel = paused ? (pctText + '% · paused') : (pctText + '%');
-                    bar = '<div style="background:rgba(128,128,128,.25);border-radius:4px;overflow:hidden;height:1.1em;">'
-                        + '<div style="background:' + barColor + ';height:100%;width:' + pct + '%;"></div></div><div class="fieldDescription">' + pctLabel + '</div>';
-                } else if (job.Status === 'Completed') {
-                    bar = '<span class="fieldDescription">→ ' + esc(job.OutputPath) + '</span>';
-                }
-                var progressCell = '<td style="padding:0.4em;">' + bar + '</td>';
+                var barColor = paused ? '#888' : '#00a4dc';
+                var label = pct.toFixed(1) + '%' + (paused ? ' · paused' : '') + (job.StatusDetail ? ' · ' + esc(job.StatusDetail) : '');
 
-                var timeCell = '<td style="padding:0.4em;"><span class="fieldDescription">' + esc(timeInfo(job)) + '</span></td>';
+                var row = document.createElement('div');
+                row.style.cssText = 'padding:0.45em 0;border-bottom:1px solid rgba(128,128,128,.15);';
+                row.innerHTML = nameLine(job)
+                    + '<div style="background:rgba(128,128,128,.25);border-radius:4px;overflow:hidden;height:1.1em;margin-top:0.3em;max-width:34em;">'
+                    + '<div style="background:' + barColor + ';height:100%;width:' + pct + '%;"></div></div>'
+                    + '<div class="fieldDescription">' + label + ' · ' + esc(timeInfo(job)) + '</div>';
 
-                tr.innerHTML = itemCell + statusCell + progressCell + timeCell + '<td style="padding:0.4em;" class="actions"></td>';
+                var btn = document.createElement('button');
+                btn.setAttribute('is', 'emby-button');
+                btn.type = 'button';
+                btn.className = 'raised button-alt';
+                btn.style.cssText = 'padding:0.2em 0.6em;margin-top:0.3em;';
+                btn.innerHTML = '<span>Cancel</span>';
+                btn.addEventListener('click', function () { api('POST', 'Jobs/' + job.Id + '/Cancel').then(load); });
+                row.appendChild(btn);
 
-                var actions = tr.querySelector('.actions');
-                if (job.Status === 'Pending' || job.Status === 'Processing') {
-                    actions.appendChild(actionButton('Cancel', '', function () { api('POST', 'Jobs/' + job.Id + '/Cancel').then(load); }));
-                }
-                if (job.Status === 'Failed' || job.Status === 'Cancelled' || job.Status === 'Completed' || job.Status === 'Skipped') {
-                    actions.appendChild(actionButton('Requeue', '', function () { api('POST', 'Jobs/' + job.Id + '/Requeue').then(load); }));
-                }
-                actions.appendChild(actionButton('Remove', '', function () { api('DELETE', 'Jobs/' + job.Id).then(load); }));
-
-                body.appendChild(tr);
+                host.appendChild(row);
             });
+        }
 
-            body.querySelectorAll('details[data-log-id]').forEach(function (d) {
-                if (open[d.getAttribute('data-log-id')]) { d.open = true; }
+        function renderUpNext(jobs, pending) {
+            var host = document.getElementById('upNext');
+            if (!jobs.length) {
+                host.innerHTML = '<p class="fieldDescription">Nothing waiting.</p>';
+                return;
+            }
+
+            var html = '';
+            jobs.forEach(function (job, i) {
+                html += '<div class="flex" style="gap:0.5em;padding:0.35em 0;border-bottom:1px solid rgba(128,128,128,.15);">'
+                    + '<div class="fieldDescription" style="width:2em;flex:none;">' + (i + 1) + '.</div>'
+                    + '<div style="flex:1;min-width:0;">' + nameLine(job) + '</div></div>';
             });
+            host.innerHTML = html + moreLine(jobs.length, pending, 'queued');
+        }
+
+        function renderRecent(jobs, finishedTotal) {
+            var host = document.getElementById('recent');
+            if (!jobs.length) {
+                host.innerHTML = '<p class="fieldDescription">Nothing has finished yet.</p>';
+                return;
+            }
+
+            var html = '';
+            jobs.forEach(function (job) {
+                var note = '';
+                if (job.Status === 'Completed' && job.OutputPath) {
+                    note = '→ ' + esc(job.OutputPath);
+                } else if (job.Status === 'Failed' && job.ErrorMessage) {
+                    note = '<span style="color:#c33;">' + esc(job.ErrorMessage) + '</span>';
+                } else if (job.StatusDetail) {
+                    note = esc(job.StatusDetail);
+                }
+
+                html += '<div style="padding:0.35em 0;border-bottom:1px solid rgba(128,128,128,.15);">'
+                    + nameLine(job)
+                    + '<div class="fieldDescription">' + esc(job.Status) + ' · ' + esc(ago(job))
+                    + (note ? ' · ' + note : '') + '</div></div>';
+            });
+            host.innerHTML = html + moreLine(jobs.length, finishedTotal, 'in the history');
         }
 
         function load() {
-            return Promise.all([api('GET', 'Jobs'), api('GET', 'Queue/Status')]).then(function (res) {
-                var jobs = res[0] || [];
-                var st = res[1] || {};
-                renderJobs(jobs, st.IsPaused);
+            return api('GET', 'Queue/Overview?upNext=3&recent=3').then(function (st) {
+                st = st || {};
+                var processing = st.ProcessingJobs || [];
+                var upNext = st.UpNext || [];
+                var recent = st.Recent || [];
+                var finishedTotal = (st.Completed || 0) + (st.Failed || 0) + (st.Cancelled || 0) + (st.Skipped || 0);
+
                 document.getElementById('summary').textContent =
                     (st.IsPaused ? '⏸ PAUSED — ' : '') +
                     'Pending: ' + (st.Pending || 0) + ' · Processing: ' + (st.Processing || 0) +
                     ' · Completed: ' + (st.Completed || 0) + ' · Failed: ' + (st.Failed || 0) +
                     ' · Skipped: ' + (st.Skipped || 0);
+
+                // Rebuild only when something visible moved, so a text selection survives the 2s poll.
+                // While an encode is running the progress bar, elapsed time and ETA have to keep ticking,
+                // so the signature deliberately changes every poll in that case.
+                var sig = JSON.stringify([st.IsPaused ? 1 : 0, processing.length ? Date.now() : 0,
+                    st.Pending, finishedTotal,
+                    upNext.map(function (j) { return j.Id; }),
+                    recent.map(function (j) { return [j.Id, j.Status, j.OutputPath, j.ErrorMessage]; })]);
+                if (sig === lastSig) { return; }
+                lastSig = sig;
+
+                renderProcessing(processing, st.IsPaused);
+                renderUpNext(upNext, st.Pending || 0);
+                renderRecent(recent, finishedTotal);
             });
         }
 
@@ -275,10 +306,19 @@
             }, function () { showSingleMsg('Search failed.'); });
         }
 
+        function openJobs(filter) {
+            // Remembered as well as passed in the URL: Jellyfin's dashboard routes through the hash and
+            // some clients drop the extra parameter on the way.
+            try { window.sessionStorage.setItem('preTranscodeJobsFilter', filter); } catch (e) { /* private mode */ }
+            Dashboard.navigate('configurationpage?name=PreTranscodeJobs&filter=' + filter);
+        }
+
         page.querySelector('#btnSingleSearch').addEventListener('click', searchSingle);
         page.querySelector('#singleSearch').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); searchSingle(); } });
 
         page.querySelector('#lnkSettings').addEventListener('click', function (e) { e.preventDefault(); Dashboard.navigate('configurationpage?name=Pre-Transcode'); });
+        page.querySelector('#lnkQueue').addEventListener('click', function (e) { e.preventDefault(); openJobs('active'); });
+        page.querySelector('#lnkHistory').addEventListener('click', function (e) { e.preventDefault(); openJobs('finished'); });
         page.querySelector('#btnSweep').addEventListener('click', function () { api('POST', 'Sweep').then(function () { setTimeout(load, 1000); }); });
         page.querySelector('#btnPause').addEventListener('click', function () { api('POST', 'Queue/Pause').then(load); });
         page.querySelector('#btnResume').addEventListener('click', function () { api('POST', 'Queue/Resume').then(load); });
@@ -287,10 +327,14 @@
                 api('POST', 'Jobs/CancelAll').then(load);
             }
         });
-        page.querySelector('#btnClear').addEventListener('click', function () { api('POST', 'Jobs/ClearFinished').then(load); });
-        page.querySelector('#btnRefresh').addEventListener('click', load);
+        page.querySelector('#btnClear').addEventListener('click', function () {
+            if (window.confirm('Delete every finished job record? A source whose record is gone can be picked up by a later sweep again.')) {
+                api('POST', 'Jobs/ClearFinished').then(load);
+            }
+        });
+        page.querySelector('#btnRefresh').addEventListener('click', function () { lastSig = null; load(); });
 
-        page.addEventListener('pageshow', function () { if (timer) { clearInterval(timer); } loadProfiles(); load(); timer = setInterval(load, 2000); });
+        page.addEventListener('pageshow', function () { if (timer) { clearInterval(timer); } lastSig = null; loadProfiles(); load(); timer = setInterval(load, 2000); });
         page.addEventListener('pagehide', function () { if (timer) { clearInterval(timer); timer = null; } });
     })();
     </script>

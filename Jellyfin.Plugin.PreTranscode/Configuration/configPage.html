@@ -17,7 +17,7 @@
                         <span>Scan library now</span>
                     </button>
                     <a is="emby-linkbutton" class="raised button-alt" href="#" id="lnkQueue" style="margin-left:0.8em;">
-                        <span>Queue &amp; status &raquo;</span>
+                        <span>Control center &raquo;</span>
                     </a>
                 </div>
                 <p class="fieldDescription">Converts library media <b>once, in the background</b>, into a compatibility baseline you define &mdash; so the server doesn&rsquo;t live-transcode the same files on every playback. Set up a <b>profile</b> (what to convert to) and enable at least one <b>trigger rule</b> (which files to convert). Nothing is processed until a rule is on.</p>
@@ -633,7 +633,7 @@
             Dashboard.showLoadingMsg();
             ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('PreTranscode/Sweep') }).then(function () {
                 Dashboard.hideLoadingMsg();
-                Dashboard.alert('Library scan started. It uses your saved settings, so save first if you just changed anything. Watch it on the Queue & status page.');
+                Dashboard.alert('Library scan started. It uses your saved settings, so save first if you just changed anything. Watch it on the control center page.');
             }, function () {
                 Dashboard.hideLoadingMsg();
                 Dashboard.alert('Could not start the library scan.');

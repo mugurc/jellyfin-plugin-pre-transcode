@@ -169,8 +169,13 @@ All settings live on the plugin's page (**Dashboard → Plugins → Pre-Transcod
 2. Queue work either by enabling **"queue new items automatically"** (post-scan hook + item-added
    monitor) or by running the **Pre-Transcode: sweep library** task (Dashboard → Scheduled Tasks,
    run now or on its daily schedule).
-3. Watch progress on the plugin's **Queue & status** page: pending / processing (with %) / completed
-   / failed (with the ffmpeg error), plus pause, cancel, requeue and clear-finished controls.
+3. Watch progress on the plugin's **Control center** page (Dashboard sidebar → *Pre-Transcode*): the
+   queue counts, what is encoding right now with its progress and ETA, the next few jobs, the last few
+   that finished, plus the sweep / pause / cancel-all / clear-finished controls and the single-item
+   search.
+4. **Open full queue** and **Open full history** lead to the job list, which is paged, searchable and
+   filtered — the control center never loads more than a screenful, so a library that produces tens of
+   thousands of jobs no longer means a page hundreds of screens long.
 
 ### Why isn't my rule firing?
 

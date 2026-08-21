@@ -40,6 +40,8 @@
     <EmbeddedResource Include="Configuration\configPage.html" />
     <None Remove="Configuration\queuePage.html" />
     <EmbeddedResource Include="Configuration\queuePage.html" />
+    <None Remove="Configuration\jobsPage.html" />
+    <EmbeddedResource Include="Configuration\jobsPage.html" />
   </ItemGroup>
 
   <ItemGroup>

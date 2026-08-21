@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Pre-Transcode Jobs</title>
+</head>
+<body>
+<div id="PreTranscodeJobsPage" data-role="page" class="page type-interior pluginConfigurationPage"
+     data-require="emby-input,emby-button,emby-select">
+    <div data-role="content">
+        <div class="content-primary">
+            <div class="verticalSection">
+                <div class="sectionTitleContainer flex align-items-center">
+                    <h2 class="sectionTitle" id="pageTitle">Pre-Transcode &mdash; Queue</h2>
+                    <a is="emby-linkbutton" class="raised button-alt" href="#" id="lnkBack" style="margin-left:1.5em;">
+                        <span>&laquo; Control center</span>
+                    </a>
+                </div>
+                <div class="flex align-items-center" style="gap:0.6em;flex-wrap:wrap;margin:0.6em 0;">
+                    <button is="emby-button" type="button" id="tabActive" class="raised"><span>Queue</span></button>
+                    <button is="emby-button" type="button" id="tabFinished" class="raised button-alt"><span>History</span></button>
+                    <button is="emby-button" type="button" id="tabAll" class="raised button-alt"><span>All</span></button>
+                    <input is="emby-input" type="text" id="search" placeholder="Filter by name or path&hellip;" style="min-width:16em;" />
+                    <select is="emby-select" id="pageSize" style="min-width:9em;">
+                        <option value="25">25 per page</option>
+                        <option value="50" selected>50 per page</option>
+                        <option value="100">100 per page</option>
+                        <option value="200">200 per page</option>
+                    </select>
+                    <button is="emby-button" type="button" id="btnRefresh" class="raised button-alt"><span>Refresh</span></button>
+                </div>
+            </div>
+            <div class="verticalSection">
+                <div class="flex align-items-center" style="gap:0.6em;flex-wrap:wrap;">
+                    <span class="fieldDescription" id="range">Loading&hellip;</span>
+                    <span style="flex:1;"></span>
+                    <button is="emby-button" type="button" id="btnPrev" class="raised button-alt"><span>&laquo; Previous</span></button>
+                    <button is="emby-button" type="button" id="btnNext" class="raised button-alt"><span>Next &raquo;</span></button>
+                </div>
+                <table style="width:100%;border-collapse:collapse;margin-top:0.5em;">
+                    <thead>
+                        <tr style="text-align:left;border-bottom:1px solid rgba(128,128,128,.4);">
+                            <th style="padding:0.4em;">Item</th>
+                            <th style="padding:0.4em;width:9em;">Status</th>
+                            <th style="padding:0.4em;width:12em;">Progress</th>
+                            <th style="padding:0.4em;width:11em;">Time</th>
+                            <th style="padding:0.4em;width:12em;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="jobsBody"></tbody>
+                </table>
+                <p class="fieldDescription" id="empty" style="display:none;">Nothing here.</p>
+            </div>
+        </div>
+    </div>
+    <script type="text/javascript">
+    (function () {
+        var page = document.querySelector('#PreTranscodeJobsPage');
+        var timer = null;
+        var lastSig = null;
+        var searchTimer = null;
+
+        var state = { filter: 'active', search: '', startIndex: 0, limit: 50 };
+
+        function api(method, path, body) {
+            var opts = { type: method, url: ApiClient.getUrl('PreTranscode/' + path), dataType: method === 'GET' ? 'json' : undefined };
+            if (body !== undefined) { opts.data = JSON.stringify(body); opts.contentType = 'application/json'; }
+            return ApiClient.ajax(opts);
+        }
+
+        function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+
+        // Timestamps come from the API as UTC; guard against a missing zone marker so elapsed
+        // time is not silently shifted by the browser's offset.
+        function parseUtc(s) {
+            if (!s) { return null; }
+            var d = new Date(/[Zz]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : s + 'Z');
+            return isNaN(d.getTime()) ? null : d;
+        }
+
+        function fmtDuration(sec) {
+            if (!isFinite(sec) || sec < 0) { return ''; }
+            sec = Math.round(sec);
+            var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+            if (h > 0) { return h + 'h ' + m + 'm'; }
+            if (m > 0) { return m + 'm ' + s + 's'; }
+            return s + 's';
+        }
+
+        function timeInfo(job) {
+            var started = parseUtc(job.StartedUtc);
+            if (!started) { return ''; }
+
+            if (job.Status === 'Processing') {
+                var elapsed = (Date.now() - started.getTime()) / 1000;
+                var text = fmtDuration(elapsed) + ' elapsed';
+                var pct = job.Progress || 0;
+                // Linear extrapolation; only once there is enough progress for it to mean anything.
+                if (pct >= 2) {
+                    text += ' · ~' + fmtDuration(elapsed * (100 - pct) / pct) + ' left';
+                }
+                return text;
+            }
+
+            var finished = parseUtc(job.FinishedUtc);
+            return finished ? 'took ' + fmtDuration((finished.getTime() - started.getTime()) / 1000) : '';
+        }
+
+        function actionButton(label, fn) {
+            var b = document.createElement('button');
+            b.setAttribute('is', 'emby-button');
+            b.type = 'button';
+            b.className = 'raised button-alt';
+            b.style.marginRight = '0.3em';
+            b.style.padding = '0.2em 0.6em';
+            b.innerHTML = '<span>' + label + '</span>';
+            b.addEventListener('click', fn);
+            return b;
+        }
+
+        function renderJobs(jobs, paused) {
+            var body = document.getElementById('jobsBody');
+
+            // Skip the rebuild when nothing visible changed, so an open ffmpeg-log panel and any text
+            // selection inside it survive the 2s poll instead of being destroyed and recreated.
+            // While any job on this page is processing, refresh every poll so the progress bar, elapsed
+            // time and ETA keep ticking: keying only on the whole-number percent froze the row on a slow
+            // (e.g. 4K) encode, where progress moves less than 1% between polls.
+            var anyProcessing = jobs.some(function (j) { return j.Status === 'Processing'; });
+            var sig = JSON.stringify([paused ? 1 : 0, anyProcessing ? Date.now() : 0, jobs.map(function (j) {
+                return [j.Id, j.Status, j.Progress || 0, j.StatusDetail, j.ErrorMessage, j.LogExcerpt, j.OutputPath];
+            })]);
+            if (sig === lastSig) { return; }
+            lastSig = sig;
+
+            // When a rebuild is unavoidable (e.g. another job's progress moved), remember which log
+            // panels were expanded so they can be re-expanded afterwards rather than snapping shut.
+            var open = {};
+            body.querySelectorAll('details[data-log-id]').forEach(function (d) {
+                if (d.open) { open[d.getAttribute('data-log-id')] = true; }
+            });
+
+            body.innerHTML = '';
+            document.getElementById('empty').style.display = jobs.length ? 'none' : '';
+
+            jobs.forEach(function (job) {
+                var tr = document.createElement('tr');
+                tr.style.borderBottom = '1px solid rgba(128,128,128,.15)';
+
+                var name = job.DisplayName || job.SourcePath;
+                var detail = job.StatusDetail ? (' — ' + esc(job.StatusDetail)) : '';
+                var err = job.Status === 'Failed' && job.ErrorMessage ? '<div class="fieldDescription" style="color:#c33;">' + esc(job.ErrorMessage) + '</div>' : '';
+                var log = job.Status === 'Failed' && job.LogExcerpt
+                    ? '<details data-log-id="' + esc(job.Id) + '" style="margin-top:0.3em;"><summary class="fieldDescription" style="cursor:pointer;">Show ffmpeg output</summary>'
+                        + '<pre style="white-space:pre-wrap;word-break:break-word;font-size:0.85em;max-height:16em;overflow:auto;margin:0.3em 0 0;">'
+                        + esc(job.LogExcerpt) + '</pre></details>'
+                    : '';
+                var itemCell = '<td style="padding:0.4em;"><div>' + esc(name) + '</div><div class="fieldDescription">' + esc(job.SourcePath) + '</div>' + err + log + '</td>';
+                var statusCell = '<td style="padding:0.4em;">' + esc(job.Status) + detail + '</td>';
+
+                var pct = job.Progress || 0;
+                var bar = '';
+                if (job.Status === 'Processing') {
+                    var barColor = paused ? '#888' : '#00a4dc';
+                    var pctText = pct.toFixed(1);
+                    var pctLabel = paused ? (pctText + '% · paused') : (pctText + '%');
+                    bar = '<div style="background:rgba(128,128,128,.25);border-radius:4px;overflow:hidden;height:1.1em;">'
+                        + '<div style="background:' + barColor + ';height:100%;width:' + pct + '%;"></div></div><div class="fieldDescription">' + pctLabel + '</div>';
+                } else if (job.Status === 'Completed') {
+                    bar = '<span class="fieldDescription">→ ' + esc(job.OutputPath) + '</span>';
+                }
+                var progressCell = '<td style="padding:0.4em;">' + bar + '</td>';
+
+                var timeCell = '<td style="padding:0.4em;"><span class="fieldDescription">' + esc(timeInfo(job)) + '</span></td>';
+
+                tr.innerHTML = itemCell + statusCell + progressCell + timeCell + '<td style="padding:0.4em;" class="actions"></td>';
+
+                var actions = tr.querySelector('.actions');
+                if (job.Status === 'Pending' || job.Status === 'Processing') {
+                    actions.appendChild(actionButton('Cancel', function () { api('POST', 'Jobs/' + job.Id + '/Cancel').then(load); }));
+                }
+                if (job.Status === 'Failed' || job.Status === 'Cancelled' || job.Status === 'Completed' || job.Status === 'Skipped') {
+                    actions.appendChild(actionButton('Requeue', function () { api('POST', 'Jobs/' + job.Id + '/Requeue').then(load); }));
+                }
+                actions.appendChild(actionButton('Remove', function () { api('DELETE', 'Jobs/' + job.Id).then(load); }));
+
+                body.appendChild(tr);
+            });
+
+            body.querySelectorAll('details[data-log-id]').forEach(function (d) {
+                if (open[d.getAttribute('data-log-id')]) { d.open = true; }
+            });
+        }
+
+        function titleFor(filter) {
+            if (filter === 'active') { return 'Pre-Transcode — Queue'; }
+            if (filter === 'finished') { return 'Pre-Transcode — History'; }
+            return 'Pre-Transcode — All jobs';
+        }
+
+        function syncTabs() {
+            [['active', 'tabActive'], ['finished', 'tabFinished'], ['all', 'tabAll']].forEach(function (pair) {
+                var el = document.getElementById(pair[1]);
+                el.className = state.filter === pair[0] ? 'raised' : 'raised button-alt';
+            });
+            document.getElementById('pageTitle').textContent = titleFor(state.filter);
+        }
+
+        function load() {
+            var q = 'Jobs/Query?filter=' + encodeURIComponent(state.filter)
+                + '&search=' + encodeURIComponent(state.search)
+                + '&startIndex=' + state.startIndex
+                + '&limit=' + state.limit;
+
+            return api('GET', q).then(function (res) {
+                res = res || {};
+                var items = res.Items || [];
+                var total = res.TotalRecordCount || 0;
+
+                // A page whose jobs were trimmed or removed underneath it comes back empty; step back to
+                // the last page that still has rows rather than stranding the reader on a blank table.
+                if (!items.length && state.startIndex > 0 && total > 0) {
+                    state.startIndex = Math.max(0, (Math.ceil(total / state.limit) - 1) * state.limit);
+                    return load();
+                }
+
+                renderJobs(items, res.IsPaused);
+
+                var first = total ? state.startIndex + 1 : 0;
+                var last = state.startIndex + items.length;
+                document.getElementById('range').textContent = total
+                    ? ('Showing ' + first + '–' + last + ' of ' + total)
+                    : 'No matching jobs';
+                document.getElementById('btnPrev').disabled = state.startIndex <= 0;
+                document.getElementById('btnNext').disabled = last >= total;
+            });
+        }
+
+        function reset() {
+            state.startIndex = 0;
+            lastSig = null;
+            syncTabs();
+            load();
+        }
+
+        function setFilter(filter) {
+            state.filter = filter;
+            try { window.sessionStorage.setItem('preTranscodeJobsFilter', filter); } catch (e) { /* private mode */ }
+            reset();
+        }
+
+        // The control center links here with "&filter=active" / "&filter=finished". Jellyfin's dashboard
+        // routes through the hash, so the parameter can land in either half of the URL; sessionStorage is
+        // the fallback for a client that drops it entirely.
+        function initialFilter() {
+            var m = /[?&]filter=([a-z]+)/i.exec(window.location.href || '');
+            if (m) { return m[1].toLowerCase(); }
+            try { return window.sessionStorage.getItem('preTranscodeJobsFilter') || 'active'; } catch (e) { return 'active'; }
+        }
+
+        page.querySelector('#lnkBack').addEventListener('click', function (e) {
+            e.preventDefault();
+            Dashboard.navigate('configurationpage?name=PreTranscodeQueue');
+        });
+        page.querySelector('#tabActive').addEventListener('click', function () { setFilter('active'); });
+        page.querySelector('#tabFinished').addEventListener('click', function () { setFilter('finished'); });
+        page.querySelector('#tabAll').addEventListener('click', function () { setFilter('all'); });
+        page.querySelector('#btnRefresh').addEventListener('click', function () { lastSig = null; load(); });
+        page.querySelector('#btnPrev').addEventListener('click', function () {
+            state.startIndex = Math.max(0, state.startIndex - state.limit);
+            lastSig = null;
+            load();
+        });
+        page.querySelector('#btnNext').addEventListener('click', function () {
+            state.startIndex += state.limit;
+            lastSig = null;
+            load();
+        });
+        page.querySelector('#pageSize').addEventListener('change', function () {
+            state.limit = parseInt(this.value, 10) || 50;
+            reset();
+        });
+        page.querySelector('#search').addEventListener('input', function () {
+            var value = this.value || '';
+            if (searchTimer) { clearTimeout(searchTimer); }
+            // Debounced: typing a title should not fire one request per keystroke at 2s-poll cadence.
+            searchTimer = setTimeout(function () { state.search = value.trim(); reset(); }, 300);
+        });
+
+        page.addEventListener('pageshow', function () {
+            if (timer) { clearInterval(timer); }
+            state.filter = initialFilter();
+            state.startIndex = 0;
+            lastSig = null;
+            syncTabs();
+            load();
+            timer = setInterval(load, 2000);
+        });
+        page.addEventListener('pagehide', function () {
+            if (timer) { clearInterval(timer); timer = null; }
+            if (searchTimer) { clearTimeout(searchTimer); searchTimer = null; }
+        });
+    })();
+    </script>
+</div>
+</body>
+</html>

@@ -101,6 +101,70 @@ public class PreTranscodeController : ControllerBase
     }
 
     /// <summary>
+    /// Returns one page of jobs, filtered and ordered for a specific view, plus how many jobs the
+    /// filter matched in total.
+    /// <para>
+    /// This is what the pages poll. <c>GET Jobs</c> still returns the whole list for scripting, but a
+    /// library big enough to fill the queue with tens of thousands of jobs makes that megabytes per
+    /// poll and a table hundreds of screens long, so no view asks for it.
+    /// </para>
+    /// </summary>
+    /// <param name="filter">Which slice: <c>active</c> (the live queue), <c>finished</c> (history), or everything.</param>
+    /// <param name="search">Optional text matched against the display name and the source path.</param>
+    /// <param name="startIndex">How many matching jobs to skip.</param>
+    /// <param name="limit">Page size, clamped to 1-500.</param>
+    /// <returns>The page and the total number of matches.</returns>
+    [HttpGet("Jobs/Query")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<object> QueryJobs(
+        [FromQuery] string? filter = null,
+        [FromQuery] string? search = null,
+        [FromQuery] int startIndex = 0,
+        [FromQuery] int limit = 50)
+    {
+        var (items, total) = JobQuery.Page(_queue.GetJobs(), JobQuery.ParseFilter(filter), search, startIndex, limit);
+
+        return Ok(new
+        {
+            Items = items,
+            TotalRecordCount = total,
+            StartIndex = Math.Max(startIndex, 0),
+            IsPaused = _queue.IsPaused
+        });
+    }
+
+    /// <summary>
+    /// Everything the control-center page needs in one poll: the queue counts, what is encoding right
+    /// now, the next few pending jobs, and the last few that finished.
+    /// </summary>
+    /// <param name="upNext">How many pending jobs to preview (clamped to 0-25).</param>
+    /// <param name="recent">How many finished jobs to preview (clamped to 0-25).</param>
+    /// <returns>The overview.</returns>
+    [HttpGet("Queue/Overview")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<object> GetQueueOverview([FromQuery] int upNext = 3, [FromQuery] int recent = 3)
+    {
+        var jobs = _queue.GetJobs();
+        var counts = JobQuery.Count(jobs);
+        var (processing, next, finished) = JobQuery.Overview(jobs, Math.Clamp(upNext, 0, 25), Math.Clamp(recent, 0, 25));
+
+        return Ok(new
+        {
+            IsPaused = _queue.IsPaused,
+            counts.Pending,
+            counts.Processing,
+            counts.Completed,
+            counts.Failed,
+            counts.Cancelled,
+            counts.Skipped,
+            counts.Total,
+            ProcessingJobs = processing,
+            UpNext = next,
+            Recent = finished
+        });
+    }
+
+    /// <summary>
     /// Gets a summary of queue status and job counts.
     /// </summary>
     /// <returns>The queue status.</returns>
@@ -108,31 +172,17 @@ public class PreTranscodeController : ControllerBase
     [ProducesResponseType(StatusCodes.Status200OK)]
     public ActionResult<object> GetQueueStatus()
     {
-        // Single pass rather than five separate Count() enumerations; this endpoint is polled every 2s.
-        int pending = 0, processing = 0, completed = 0, failed = 0, skipped = 0;
-        var jobs = _queue.GetJobs();
-        foreach (var job in jobs)
-        {
-            switch (job.Status)
-            {
-                case JobStatus.Pending: pending++; break;
-                case JobStatus.Processing: processing++; break;
-                case JobStatus.Completed: completed++; break;
-                case JobStatus.Failed: failed++; break;
-                case JobStatus.Skipped: skipped++; break;
-                default: break;
-            }
-        }
+        var counts = JobQuery.Count(_queue.GetJobs());
 
         return Ok(new
         {
             IsPaused = _queue.IsPaused,
-            Pending = pending,
-            Processing = processing,
-            Completed = completed,
-            Failed = failed,
-            Skipped = skipped,
-            Total = jobs.Count
+            counts.Pending,
+            counts.Processing,
+            counts.Completed,
+            counts.Failed,
+            counts.Skipped,
+            counts.Total
         });
     }
 
