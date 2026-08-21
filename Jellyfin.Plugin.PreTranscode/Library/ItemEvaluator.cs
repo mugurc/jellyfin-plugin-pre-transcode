@@ -190,7 +190,7 @@ public sealed class ItemEvaluator
             return false;
         }
 
-        if (AlreadyHandled(knownJobs ?? _queue.GetJobs(), path, profile.Id, File.Exists, MaxAutoFailedAttempts))
+        if (AlreadyHandled(knownJobs ?? _queue.GetJobs(), path, profile.Id, TranscodeExecutor.FileSizeOrZero, MaxAutoFailedAttempts))
         {
             Explain(verbose, path, FormattableString.Invariant(
                 $"the queue already records a finished transcode of this source for profile '{profile.Name}', or it has failed {MaxAutoFailedAttempts} times (requeue it manually from the queue page)"));
@@ -253,7 +253,7 @@ public sealed class ItemEvaluator
         // re-transcoded into a "... (1)" file. Evaluated under the queue lock, with the live job list.
         var added = _queue.Enqueue(job, jobs =>
             OutputAlreadyExists(profile, path)
-            || AlreadyHandled(jobs, path, profile.Id, File.Exists, MaxAutoFailedAttempts));
+            || AlreadyHandled(jobs, path, profile.Id, TranscodeExecutor.FileSizeOrZero, MaxAutoFailedAttempts));
         if (added)
         {
             _logger.LogInformation("Queued {Path} using profile {Profile}", path, profile.Name);
@@ -331,7 +331,7 @@ public sealed class ItemEvaluator
         IEnumerable<TranscodeJob> jobs,
         string sourcePath,
         string profileId,
-        Func<string, bool> outputExists,
+        Func<string, long> outputSize,
         int maxFailedAttempts)
     {
         var failed = 0;
@@ -352,7 +352,8 @@ public sealed class ItemEvaluator
             // generation every sweep, for as long as the file stayed over the threshold. Recognising the
             // output by name closes that. Scoped to the same profile, like the check below: a different
             // profile transcoding this file is a legitimate chain, not a loop.
-            if (done && string.Equals(job.OutputPath, sourcePath, StringComparison.OrdinalIgnoreCase))
+            if (done && string.Equals(job.OutputPath, sourcePath, StringComparison.OrdinalIgnoreCase)
+                && IsStillThatOutput(job, outputSize))
             {
                 return true;
             }
@@ -362,7 +363,7 @@ public sealed class ItemEvaluator
                 continue;
             }
 
-            if (done && !string.IsNullOrEmpty(job.OutputPath) && outputExists(job.OutputPath))
+            if (done && !string.IsNullOrEmpty(job.OutputPath) && outputSize(job.OutputPath) > 0)
             {
                 return true;
             }
@@ -374,6 +375,16 @@ public sealed class ItemEvaluator
         }
 
         return maxFailedAttempts > 0 && failed >= maxFailedAttempts;
+    }
+
+    // Path identity is not file identity. Recognising a candidate purely by the name a finished job
+    // recorded as its output meant that deleting that transcode and dropping a different file in under
+    // the same name blacklisted the path for this profile for ever — and the explanation in the log named
+    // a source that is not this file at all. A record from a build that did not store the size is trusted
+    // as before, so upgrading does not re-transcode a library.
+    private static bool IsStillThatOutput(TranscodeJob job, Func<string, long> outputSize)
+    {
+        return job.OutputSizeBytes <= 0 || outputSize(job.OutputPath) == job.OutputSizeBytes;
     }
 
     private (EncodingProfile? Profile, IReadOnlyList<TriggerRule> Rules, bool Enabled) ResolveForLibrary(PluginConfiguration config, BaseItem item)

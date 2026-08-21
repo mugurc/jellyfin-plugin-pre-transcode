@@ -98,6 +98,11 @@ internal static class FfmpegCommandBuilder
         {
             args.Add("-c:v");
             args.Add("copy");
+
+            // These used to be dropped without a word on a copy profile. A filter among them still is —
+            // it cannot be applied to a stream that is not being re-encoded, and passing it would make
+            // ffmpeg refuse the whole job — but everything else the admin configured is honoured.
+            AddRawWithFilters(args, profile.ExtraVideoArgs, null);
         }
         else
         {
@@ -131,7 +136,7 @@ internal static class FfmpegCommandBuilder
                 args.Add(pixelFormat);
             }
 
-            AddRaw(args, profile.ExtraVideoArgs);
+            AddRawWithFilters(args, profile.ExtraVideoArgs, filters);
         }
 
         if (filters.Count > 0)
@@ -554,9 +559,45 @@ internal static class FfmpegCommandBuilder
 
     private static void AddRaw(List<string> args, string raw)
     {
+        args.AddRange(Tokenize(raw));
+    }
+
+    /// <summary>
+    /// Splits an admin-typed argument string the way a shell would, and lifts any video filter it
+    /// contains into <paramref name="filters"/> instead of emitting it.
+    /// <para>
+    /// ffmpeg keeps only the LAST <c>-vf</c> for a stream, and the builder emits its own after the extra
+    /// args — so an admin who added <c>-vf hqdn3d</c> to a profile that also caps the resolution had
+    /// their filter silently discarded, with only an ffmpeg warning on a stream nothing reads on a
+    /// successful job. Merging the two chains keeps both, which is what "extra" was meant to mean.
+    /// </para>
+    /// </summary>
+    /// <param name="args">The argument list to append the non-filter tokens to.</param>
+    /// <param name="raw">The admin's argument string.</param>
+    /// <param name="filters">The filter chain being built, or <c>null</c> to drop filters entirely —
+    /// which is the copy case, where a filter cannot be applied to a stream that is not re-encoded.</param>
+    private static void AddRawWithFilters(List<string> args, string raw, List<string>? filters)
+    {
+        var tokens = Tokenize(raw);
+        for (var i = 0; i < tokens.Count; i++)
+        {
+            if ((Same(tokens[i], "-vf") || Same(tokens[i], "-filter:v")) && i + 1 < tokens.Count)
+            {
+                filters?.Add(tokens[i + 1]);
+                i++;
+                continue;
+            }
+
+            args.Add(tokens[i]);
+        }
+    }
+
+    private static List<string> Tokenize(string raw)
+    {
+        var tokens = new List<string>();
         if (string.IsNullOrWhiteSpace(raw))
         {
-            return;
+            return tokens;
         }
 
         // Split on spaces but keep double-quoted runs together, so an advanced arg like
@@ -574,7 +615,7 @@ internal static class FfmpegCommandBuilder
             {
                 if (current.Length > 0)
                 {
-                    args.Add(current.ToString());
+                    tokens.Add(current.ToString());
                     current.Clear();
                 }
             }
@@ -586,8 +627,10 @@ internal static class FfmpegCommandBuilder
 
         if (current.Length > 0)
         {
-            args.Add(current.ToString());
+            tokens.Add(current.ToString());
         }
+
+        return tokens;
     }
 
     private static string N(int value)

@@ -248,6 +248,7 @@ internal sealed class TranscodeExecutor
                 job.StatusDetail = FormattableString.Invariant(
                     $"kept original — transcode was not smaller ({outputBytes / (1024d * 1024d):F0} MB vs {sourceBytes / (1024d * 1024d):F0} MB source)");
                 job.OutputPath = job.SourcePath;
+                job.OutputSizeBytes = sourceBytes;
                 job.Progress = 100;
                 job.FinishedUtc = DateTime.UtcNow;
                 _queue.Update(job);
@@ -273,6 +274,7 @@ internal sealed class TranscodeExecutor
             job.Progress = 100;
             job.StatusDetail = string.Empty;
             job.OutputPath = finalPath;
+            job.OutputSizeBytes = FileSizeOrZero(finalPath);
             job.FinishedUtc = DateTime.UtcNow;
             _queue.Update(job);
             _logger.LogInformation("Completed {Path} -> {Output}", job.SourcePath, finalPath);
@@ -344,6 +346,19 @@ internal sealed class TranscodeExecutor
         job.FinishedUtc = DateTime.UtcNow;
         _queue.Update(job);
         _logger.LogWarning("Job failed for {Path}: {Message}", job.SourcePath, message);
+    }
+
+    internal static long FileSizeOrZero(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            return info.Exists ? info.Length : 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return 0;
+        }
     }
 
     // True when the produced output is at least as large as the source (i.e. re-encoding saved nothing).

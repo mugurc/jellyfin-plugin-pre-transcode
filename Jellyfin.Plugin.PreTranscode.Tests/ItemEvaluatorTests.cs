@@ -51,21 +51,21 @@ public class ItemEvaluatorTests
         }
     }
 
-    private static TranscodeJob Job(string src, string profile, JobStatus status, string output = "") =>
-        new() { SourcePath = src, ProfileId = profile, Status = status, OutputPath = output };
+    private static TranscodeJob Job(string src, string profile, JobStatus status, string output = "", long outputSize = 0) =>
+        new() { SourcePath = src, ProfileId = profile, Status = status, OutputPath = output, OutputSizeBytes = outputSize };
 
     [Fact]
     public void AlreadyHandled_TrueWhenCompletedForSameProfileAndOutputExists()
     {
         var jobs = new[] { Job("/a.mkv", "p1", JobStatus.Completed, "/out.mkv") };
-        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => true, 3));
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => 1, 3));
     }
 
     [Fact]
     public void AlreadyHandled_FalseWhenCompletedOutputMissing()
     {
         var jobs = new[] { Job("/a.mkv", "p1", JobStatus.Completed, "/out.mkv") };
-        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => false, 3));
+        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => 0, 3));
     }
 
     [Fact]
@@ -74,7 +74,7 @@ public class ItemEvaluatorTests
         // DiscardOutputIfLarger records the kept original as the job's output. That source is handled and
         // must not be re-queued and re-transcoded on every sweep just to discard a larger result again.
         var jobs = new[] { Job("/a.mkv", "p1", JobStatus.Skipped, "/a.mkv") };
-        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => true, 3));
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => 1, 3));
     }
 
     [Fact]
@@ -82,7 +82,7 @@ public class ItemEvaluatorTests
     {
         // An "already compliant" skip records no output path, so it must not block a future re-evaluation.
         var jobs = new[] { Job("/a.mkv", "p1", JobStatus.Skipped) };
-        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => true, 3));
+        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => 1, 3));
     }
 
     // Replace-in-place with a container change renames the file, so the finished job records the OLD
@@ -93,7 +93,7 @@ public class ItemEvaluatorTests
     public void AlreadyHandled_TrueWhenThePathIsAPreviousRunsOutput()
     {
         var jobs = new[] { Job("/Movie.mp4", "p1", JobStatus.Completed, "/Movie.mkv") };
-        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/Movie.mkv", "p1", _ => true, 3));
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/Movie.mkv", "p1", _ => 1, 3));
     }
 
     [Fact]
@@ -101,10 +101,10 @@ public class ItemEvaluatorTests
     {
         var jobs = new[] { Job("/Movie.mp4", "p1", JobStatus.Completed, "/Movie.mkv") };
 
-        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/MOVIE.MKV", "p1", _ => true, 3));
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/MOVIE.MKV", "p1", _ => 1, 3));
 
         // A different profile transcoding this file is a legitimate chain, not the loop above.
-        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/Movie.mkv", "p2", _ => true, 3));
+        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/Movie.mkv", "p2", _ => 1, 3));
     }
 
     [Fact]
@@ -116,7 +116,7 @@ public class ItemEvaluatorTests
             Job("/Movie.mp4", "p1", JobStatus.Failed, "/Movie.mkv"),
             Job("/Other.mp4", "p1", JobStatus.Processing, "/Movie.mkv")
         };
-        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/Movie.mkv", "p1", _ => true, 0));
+        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/Movie.mkv", "p1", _ => 1, 0));
     }
 
     [Fact]
@@ -127,7 +127,7 @@ public class ItemEvaluatorTests
             Job("/a.mkv", "p2", JobStatus.Completed, "/out.mkv"), // different profile
             Job("/b.mkv", "p1", JobStatus.Completed, "/out.mkv"), // different source
         };
-        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => true, 3));
+        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => 1, 3));
     }
 
     [Fact]
@@ -139,7 +139,7 @@ public class ItemEvaluatorTests
             Job("/a.mkv", "p1", JobStatus.Failed),
             Job("/a.mkv", "p1", JobStatus.Failed),
         };
-        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => false, 3));
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => 0, 3));
     }
 
     [Fact]
@@ -150,6 +150,28 @@ public class ItemEvaluatorTests
             Job("/a.mkv", "p1", JobStatus.Failed),
             Job("/a.mkv", "p1", JobStatus.Failed),
         };
-        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => false, 3));
+        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => 0, 3));
+    }
+
+    // Path identity is not file identity: deleting a transcode and dropping a different file in under the
+    // same name used to blacklist that path for this profile for ever, while the log blamed a source that
+    // is not this file at all.
+    [Fact]
+    public void AlreadyHandled_FalseWhenADifferentFileNowSitsAtTheOutputPath()
+    {
+        var jobs = new[] { Job("/Movie.mp4", "p1", JobStatus.Completed, "/Movie.mkv", outputSize: 9_000_000_000) };
+
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/Movie.mkv", "p1", _ => 9_000_000_000, 3));
+        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/Movie.mkv", "p1", _ => 60_000_000_000, 3));
+    }
+
+    // A record written before the size was stored is trusted as before, so upgrading does not set a whole
+    // library re-transcoding itself.
+    [Fact]
+    public void AlreadyHandled_RecordWithoutASize_IsStillTrusted()
+    {
+        var jobs = new[] { Job("/Movie.mp4", "p1", JobStatus.Completed, "/Movie.mkv") };
+
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/Movie.mkv", "p1", _ => 123, 3));
     }
 }

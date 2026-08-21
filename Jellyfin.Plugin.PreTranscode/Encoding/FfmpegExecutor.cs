@@ -14,6 +14,9 @@ namespace Jellyfin.Plugin.PreTranscode.Encoding;
 /// </summary>
 internal static class FfmpegExecutor
 {
+    // How much of ffmpeg's stderr is kept for the failure excerpt shown on the queue page.
+    private const int StdErrTailLines = 60;
+
     public static async Task<(int ExitCode, string StdErrTail)> RunAsync(
         string ffmpegPath,
         IReadOnlyList<string> arguments,
@@ -46,7 +49,13 @@ internal static class FfmpegExecutor
         }
 
         using var process = new Process { StartInfo = startInfo };
-        var stderr = new StringBuilder();
+
+        // Only the last few lines are ever read, so only they are kept. Accumulating the whole of stderr
+        // cost real memory on the sources that need diagnosing most: a file with broken timestamps makes
+        // ffmpeg print "non monotonically increasing dts" per packet, which on a 2-hour encode is a couple
+        // of hundred thousand lines — tens of megabytes of live char[], held for the length of the encode
+        // and multiplied by the configured concurrency.
+        var stderr = new Queue<string>(StdErrTailLines + 1);
         var stderrLock = new object();
 
         process.ErrorDataReceived += (_, e) =>
@@ -55,7 +64,11 @@ internal static class FfmpegExecutor
             {
                 lock (stderrLock)
                 {
-                    stderr.AppendLine(e.Data);
+                    stderr.Enqueue(e.Data);
+                    if (stderr.Count > StdErrTailLines)
+                    {
+                        stderr.Dequeue();
+                    }
                 }
             }
         };
@@ -102,16 +115,10 @@ internal static class FfmpegExecutor
         string tail;
         lock (stderrLock)
         {
-            tail = Tail(stderr.ToString(), 60);
+            tail = string.Join("\n", stderr);
         }
 
         return (process.ExitCode, tail);
-    }
-
-    private static string Tail(string text, int lines)
-    {
-        var all = text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
-        return all.Length <= lines ? text : string.Join("\n", all.Skip(all.Length - lines));
     }
 
     // Process.Kill only posts the termination; it returns before the child is gone. The caller deletes the

@@ -440,4 +440,52 @@ public class FfmpegCommandBuilderTests
         Assert.DoesNotContain("0:s:0", args, StringComparer.Ordinal);
         Assert.Contains("mov_text", args, StringComparer.Ordinal);
     }
+
+    // ffmpeg keeps only the LAST -vf for a stream and the builder emitted its own after the extra args, so
+    // an admin who added a filter to a profile that also caps the resolution had it silently discarded.
+    [Fact]
+    public void AdminVideoFilterIsMergedWithTheBuildersOwn()
+    {
+        var args = FfmpegCommandBuilder.BuildArguments(
+            new EncodingProfile
+            {
+                VideoEncoder = "libx264", AudioCodec = "copy", Container = "matroska",
+                ResolutionMode = ResolutionMode.CapHeight, MaxHeight = 1080,
+                ExtraVideoArgs = "-vf hqdn3d"
+            },
+            new MediaProbeInfo { VideoCodec = "h264", Width = 3840, Height = 2160 },
+            new List<ResolutionPreset>(),
+            "/media/Movie.mkv",
+            "/tmp/out.mkv",
+            Array.Empty<string>());
+
+        var vf = args.ToList();
+        var index = vf.IndexOf("-vf");
+        Assert.True(index >= 0, "expected a filter chain");
+        Assert.Equal(1, vf.Count(a => string.Equals(a, "-vf", StringComparison.Ordinal)));
+        Assert.Contains("hqdn3d", vf[index + 1], StringComparison.Ordinal);
+        Assert.Contains("scale", vf[index + 1], StringComparison.Ordinal);
+    }
+
+    // On a copy profile they used to be dropped without a word. A filter still is — it cannot apply to a
+    // stream that is not re-encoded — but everything else the admin configured is honoured.
+    [Fact]
+    public void ExtraVideoArgsSurviveACopyProfile_MinusTheFilter()
+    {
+        var args = FfmpegCommandBuilder.BuildArguments(
+            new EncodingProfile
+            {
+                VideoCodec = "copy", AudioCodec = "copy", Container = "matroska",
+                ExtraVideoArgs = "-vf hqdn3d -bsf:v h264_mp4toannexb"
+            },
+            new MediaProbeInfo { VideoCodec = "h264", Width = 1920, Height = 1080 },
+            new List<ResolutionPreset>(),
+            "/media/Movie.mkv",
+            "/tmp/out.mkv",
+            Array.Empty<string>());
+
+        Assert.Contains("-bsf:v", args, StringComparer.Ordinal);
+        Assert.DoesNotContain("-vf", args, StringComparer.Ordinal);
+        Assert.DoesNotContain("hqdn3d", args, StringComparer.Ordinal);
+    }
 }

@@ -68,6 +68,13 @@ public class TranscodeJob
     public string OutputPath { get; set; } = string.Empty;
 
     /// <summary>
+    /// Gets or sets the size in bytes of the file at <see cref="OutputPath"/> when the job finished.
+    /// Used to tell that path still holding <em>this</em> job's output apart from it holding some other
+    /// file that has since been put there. <c>0</c> on records written by builds before it existed.
+    /// </summary>
+    public long OutputSizeBytes { get; set; }
+
+    /// <summary>
     /// Gets or sets the number of processing attempts.
     /// </summary>
     public int AttemptCount { get; set; }
