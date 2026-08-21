@@ -89,7 +89,7 @@ public class RealFfmpegIntegrationTests
             Assert.True(exitCode == 0, "ffmpeg failed: " + stdErr);
 
             // 5. Verify the output passes our verifier and is actually H.264.
-            var (ok, reason) = await OutputVerifier.VerifyAsync(prober, output, info.DurationSeconds, CancellationToken.None);
+            var (ok, reason) = await OutputVerifier.VerifyAsync(prober, output, info, CancellationToken.None);
             Assert.True(ok, "verification failed: " + reason);
 
             var outInfo = await prober.ProbeAsync(output, CancellationToken.None);

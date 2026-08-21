@@ -16,6 +16,10 @@ namespace Jellyfin.Plugin.PreTranscode.Jobs;
 /// </summary>
 internal sealed class QueueProcessor : IHostedService, IQueueController, IDisposable
 {
+    // How long a shutdown waits for running encodes to unwind before giving up on them.
+    private const int DrainTimeoutMs = 30000;
+    private const int DrainPollMs = 200;
+
     private readonly IJobQueue _queue;
     private readonly TranscodeExecutor _executor;
     private readonly ILogger<QueueProcessor> _logger;
@@ -59,6 +63,10 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
             _logger.LogInformation("Pre-Transcode queue is paused (restored from the saved configuration)");
         }
 
+        // Nothing is encoding yet, so anything still in the temp directory is debris from a cancel that
+        // raced the dying ffmpeg, or from a crash that never reached the cleanup at all.
+        _executor.CleanTempDirectory();
+
         _stopCts = new CancellationTokenSource();
         _loop = Task.Run(() => RunLoopAsync(_stopCts.Token), CancellationToken.None);
         _logger.LogInformation("Pre-Transcode queue processor started");
@@ -82,6 +90,42 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
             {
                 // Shutting down.
             }
+        }
+
+        await DrainAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Waits for the running encodes to finish unwinding. The loop stops in microseconds; the encodes
+    /// still have to kill their ffmpeg, delete their temp file and record their state.
+    /// <para>
+    /// Nothing waited for them before. If the host won the race it exited first, and ffmpeg — reparented
+    /// to init — carried on transcoding at full CPU into a temp path derived from the job id, with no UI
+    /// left to stop it. On the next start that job is reset to Pending, re-claimed, and rebuilds the very
+    /// same temp path: two ffmpeg processes writing one file, and a result that can still satisfy the
+    /// duration check.
+    /// </para>
+    /// </summary>
+    private async Task DrainAsync(CancellationToken cancellationToken)
+    {
+        // _inFlight is incremented on the loop thread before the encode task starts and decremented in its
+        // finally, and the loop has already exited, so nothing can add to it while this drains.
+        for (var waited = 0; Volatile.Read(ref _inFlight) > 0 && waited < DrainTimeoutMs; waited += DrainPollMs)
+        {
+            try
+            {
+                await Task.Delay(DrainPollMs, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+
+        var stragglers = Volatile.Read(ref _inFlight);
+        if (stragglers > 0)
+        {
+            _logger.LogWarning("{Count} encode(s) had not finished stopping; leaving them to the shutdown", stragglers);
         }
     }
 
@@ -305,6 +349,16 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
                 }
                 finally
                 {
+                    // A cancel that came from the server stopping is not an admin cancelling the job, but
+                    // the executor cannot tell the two apart and records both as Cancelled — which is
+                    // final, so a clean restart threw away a four-hour encode and left it needing the next
+                    // sweep to notice, while a kill -9 (leaving it Processing) was correctly resumed.
+                    // Putting it back to Pending makes the graceful path at least as good as the crash.
+                    if (stopToken.IsCancellationRequested && _queue.Get(job.Id)?.Status == JobStatus.Cancelled)
+                    {
+                        _queue.Requeue(job.Id);
+                    }
+
                     Interlocked.Decrement(ref _inFlight);
                     _activeProcesses.TryRemove(job.Id, out _);
                     _cancelRequested.TryRemove(job.Id, out _);

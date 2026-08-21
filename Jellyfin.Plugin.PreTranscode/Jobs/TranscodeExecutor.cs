@@ -52,6 +52,55 @@ internal sealed class TranscodeExecutor
         _logger = logger;
     }
 
+    /// <summary>
+    /// Deletes whatever is left in the plugin's temp directory. Called once at startup, when by
+    /// definition nothing is encoding, so everything there is debris.
+    /// <para>
+    /// Nothing else ever removed it. A cancel used to race the still-dying ffmpeg for the handle, a crash
+    /// or a hard kill never got as far as the delete at all, and each one left a part-finished encode
+    /// behind — routinely several gigabytes — inside Jellyfin's own data directory, for ever.
+    /// </para>
+    /// </summary>
+    public void CleanTempDirectory()
+    {
+        try
+        {
+            if (!Directory.Exists(_tempDirectory))
+            {
+                return;
+            }
+
+            var freed = 0L;
+            var count = 0;
+            foreach (var file in Directory.EnumerateFiles(_tempDirectory))
+            {
+                try
+                {
+                    var size = new FileInfo(file).Length;
+                    File.Delete(file);
+                    freed += size;
+                    count++;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    _logger.LogWarning(ex, "Could not delete leftover temp file {Path}", file);
+                }
+            }
+
+            if (count > 0)
+            {
+                _logger.LogInformation(
+                    "Removed {Count} leftover pre-transcode temp file(s), freeing {MegaBytes} MB",
+                    count,
+                    freed / (1024 * 1024));
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning(ex, "Could not sweep the pre-transcode temp directory");
+        }
+    }
+
     public async Task ExecuteAsync(TranscodeJob job, CancellationToken cancellationToken, Action<Process>? onProcessStarted = null)
     {
         var tempFile = string.Empty;
@@ -180,7 +229,7 @@ internal sealed class TranscodeExecutor
             }
 
             SetDetail(job, "verifying");
-            var (ok, reason) = await OutputVerifier.VerifyAsync(_prober, tempFile, probe.DurationSeconds, cancellationToken).ConfigureAwait(false);
+            var (ok, reason) = await OutputVerifier.VerifyAsync(_prober, tempFile, probe, cancellationToken).ConfigureAwait(false);
             if (!ok)
             {
                 Fail(job, "output verification failed: " + reason);

@@ -495,8 +495,24 @@ internal sealed class JobQueue : IJobQueue, IDisposable
             // place first, so a crash mid-write would leave a half-written file that fails to parse on the
             // next start (and would then be discarded). The temp file lives in the same directory as the
             // target, so the rename is a same-volume atomic operation.
+            //
+            // The contents are flushed to the disk itself before the rename. Without that the rename can
+            // reach the platter first and a power cut leaves queue.json torn or zero-length — Load() then
+            // parks it as .corrupt and starts empty, taking every Completed record with it. Those records
+            // are the only thing standing between a Replace-in-place profile and re-encoding its own
+            // previous output, so the write-through this class does for final states has to be durable to
+            // mean anything.
             var tempPath = _filePath + ".tmp";
-            File.WriteAllText(tempPath, json);
+            using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                using (var writer = new StreamWriter(stream, leaveOpen: true))
+                {
+                    writer.Write(json);
+                }
+
+                stream.Flush(flushToDisk: true);
+            }
+
             File.Move(tempPath, _filePath, overwrite: true);
             return true;
         }

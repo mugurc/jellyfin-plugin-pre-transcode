@@ -114,18 +114,30 @@ internal static class FfmpegExecutor
         return all.Length <= lines ? text : string.Join("\n", all.Skip(all.Length - lines));
     }
 
+    // Process.Kill only posts the termination; it returns before the child is gone. The caller deletes the
+    // temp output as soon as this returns, so without the wait that delete raced a process still holding
+    // the handle — on Windows it fails outright and a part-finished, multi-gigabyte encode is left in the
+    // plugin's temp directory for ever. Bounded, because a wedged process must not hold up a shutdown.
     private static void TryKill(Process process)
     {
         try
         {
-            if (!process.HasExited)
+            if (process.HasExited)
             {
-                process.Kill(true);
+                return;
             }
+
+            process.Kill(true);
+            process.WaitForExit(10000);
         }
         catch (InvalidOperationException)
         {
             // Already exited.
+        }
+        catch (SystemException)
+        {
+            // Win32Exception (access denied on an exiting process) or an aborted wait: the encode is being
+            // torn down either way, and this runs while an OperationCanceledException is in flight.
         }
     }
 }
