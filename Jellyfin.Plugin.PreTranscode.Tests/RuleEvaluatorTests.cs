@@ -217,4 +217,95 @@ public class RuleEvaluatorTests
         Assert.False(RuleEvaluator.EvaluateRule(rule, shortAndSmall));
         Assert.False(RuleEvaluator.EvaluateRule(rule, longAndBig));
     }
+
+    // ffprobe names a container after its demuxer, so an mkv reports "matroska,webm" and an mp4 reports
+    // "mov,mp4,m4a,3gp,3g2,mj2" — while the UI tells the admin to type "mkv". Comparing those literally
+    // meant Equals matched nothing, and the negating operators turned that into the opposite failure:
+    // "not mp4" was true for every mp4, so a rule written to catch what is not yet mp4 queued everything.
+    [Fact]
+    public void ContainerCondition_UnderstandsWhatFfprobeActuallyReports()
+    {
+        var mkv = Info(container: "matroska,webm");
+        var mp4 = Info(container: "mov,mp4,m4a,3gp,3g2,mj2");
+
+        Assert.True(RuleEvaluator.EvaluateCondition(Cond(ConditionType.Container, ComparisonOperator.Equals, "mkv"), mkv));
+        Assert.True(RuleEvaluator.EvaluateCondition(Cond(ConditionType.Container, ComparisonOperator.Equals, "matroska"), mkv));
+        Assert.True(RuleEvaluator.EvaluateCondition(Cond(ConditionType.Container, ComparisonOperator.Equals, "mp4"), mp4));
+
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.Container, ComparisonOperator.NotEquals, "mp4"), mp4));
+        Assert.True(RuleEvaluator.EvaluateCondition(Cond(ConditionType.Container, ComparisonOperator.NotEquals, "mp4"), mkv));
+
+        Assert.True(RuleEvaluator.EvaluateCondition(Cond(ConditionType.Container, ComparisonOperator.In, "mkv,avi"), mkv));
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.Container, ComparisonOperator.NotIn, "mkv,avi"), mkv));
+    }
+
+    // An unfinished condition is still not a filter.
+    [Fact]
+    public void ContainerCondition_WithNoValue_MatchesNothing()
+    {
+        var mkv = Info(container: "matroska,webm");
+
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.Container, ComparisonOperator.Equals), mkv));
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.Container, ComparisonOperator.NotEquals), mkv));
+    }
+
+    // The scalar audio fields are copied from the FIRST stream, so every audio condition only ever saw
+    // track one. On a remux whose commentary is muxed ahead of the main track — routine — both of these
+    // answered about the 2-channel commentary and the file was never queued.
+    [Fact]
+    public void AudioConditions_AnswerAboutTheFileNotTheFirstTrack()
+    {
+        var info = Info(audioCodec: "aac", channels: 2);
+        info.AudioStreams = new List<AudioStreamInfo>
+        {
+            new AudioStreamInfo { Codec = "aac", Channels = 2 },
+            new AudioStreamInfo { Codec = "truehd", Channels = 8 }
+        };
+
+        Assert.True(RuleEvaluator.EvaluateCondition(Cond(ConditionType.AudioCodec, ComparisonOperator.Equals, "truehd"), info));
+        Assert.True(RuleEvaluator.EvaluateCondition(Cond(ConditionType.AudioChannels, ComparisonOperator.GreaterThan, "2"), info));
+    }
+
+    // A negating operator asks about the file too: "no track is truehd", not "some track isn't".
+    [Fact]
+    public void NegatedAudioConditions_MeanNoTrackIsLikeThis()
+    {
+        var info = Info();
+        info.AudioStreams = new List<AudioStreamInfo>
+        {
+            new AudioStreamInfo { Codec = "aac", Channels = 2 },
+            new AudioStreamInfo { Codec = "truehd", Channels = 8 }
+        };
+
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.AudioCodec, ComparisonOperator.NotEquals, "truehd"), info));
+        Assert.True(RuleEvaluator.EvaluateCondition(Cond(ConditionType.AudioCodec, ComparisonOperator.NotEquals, "dts"), info));
+    }
+
+    // A silent file must not satisfy "no track is aac" by having no tracks at all — All() over an empty
+    // sequence is vacuously true, which is exactly the trap the scalar fallback avoids.
+    [Fact]
+    public void FileWithNoAudio_StillMatchesNothing()
+    {
+        var silent = Info(audioCodec: string.Empty, channels: 0);
+
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.AudioCodec, ComparisonOperator.NotEquals, "aac"), silent));
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.AudioChannels, ComparisonOperator.LessThan, "6"), silent));
+        Assert.True(RuleEvaluator.EvaluateCondition(Cond(ConditionType.AudioCodec, ComparisonOperator.NotExists), silent));
+    }
+
+    // The explain log has to show every track too, or "actual: 2 => FAIL" on a file that also carries a
+    // 5.1 track is simply a lie.
+    [Fact]
+    public void ExplainLog_ShowsEveryAudioTrack()
+    {
+        var info = Info();
+        info.AudioStreams = new List<AudioStreamInfo>
+        {
+            new AudioStreamInfo { Codec = "aac", Channels = 2 },
+            new AudioStreamInfo { Codec = "truehd", Channels = 8 }
+        };
+
+        Assert.Equal("aac, truehd", RuleEvaluator.ActualValue(ConditionType.AudioCodec, info));
+        Assert.Equal("2, 8", RuleEvaluator.ActualValue(ConditionType.AudioChannels, info));
+    }
 }

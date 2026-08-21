@@ -201,6 +201,13 @@ Two traps worth knowing about, both of which this log makes visible:
   compliant"*, the target profile would change nothing it compares — codec, container, resolution,
   audio, HDR. **File size and bitrate are not compared.** A profile that exists to shrink material
   already in the target codec must therefore switch off **"Skip files already matching this profile"**.
+- **Container and audio conditions ask about the file, not one string.** `Container` is matched against
+  what ffprobe actually reports (`matroska,webm` for mkv, `mov,mp4,m4a,3gp,3g2,mj2` for mp4), so typing
+  `mkv` or `mp4` works — before 0.7.1 the comparison was literal, so `Container Equals mkv` matched
+  nothing and `Container NotEquals mp4` matched *every* mp4. `AudioCodec` and `AudioChannels` are
+  answered over **every** audio track: a positive operator means "some track is like this", a negating
+  one means "no track is". They used to see only the first track, so a remux whose commentary is muxed
+  ahead of the main audio was never queued.
 - **An unknown value fails every operator.** A numeric condition whose value the probe could not
   determine is reported as `unknown (probe reported none)` and fails for *any* operator — it is not a
   threshold miss. Matroska, for instance, carries no per-stream video bitrate, so `VideoBitrateKbps`

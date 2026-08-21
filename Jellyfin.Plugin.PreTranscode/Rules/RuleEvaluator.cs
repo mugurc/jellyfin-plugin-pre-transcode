@@ -45,9 +45,9 @@ internal static class RuleEvaluator
             case ConditionType.VideoCodec:
                 return EvaluateString(info.VideoCodec, condition);
             case ConditionType.AudioCodec:
-                return EvaluateString(info.AudioCodec, condition);
+                return AcrossTracks(condition.Operator, AudioCodecs(info), c => EvaluateString(c, condition));
             case ConditionType.Container:
-                return EvaluateString(info.Container, condition);
+                return EvaluateContainer(info.Container, condition);
             case ConditionType.VideoHeight:
                 return EvaluateNumber(info.Height, condition);
             case ConditionType.VideoWidth:
@@ -55,7 +55,7 @@ internal static class RuleEvaluator
             case ConditionType.VideoBitrateKbps:
                 return EvaluateNumber(info.VideoBitrateKbps, condition);
             case ConditionType.AudioChannels:
-                return EvaluateNumber(info.AudioChannels, condition);
+                return AcrossTracks(condition.Operator, AudioChannels(info), c => EvaluateNumber(c, condition));
             case ConditionType.VideoFramerate:
                 return EvaluateNumber(info.VideoFramerate, condition);
             case ConditionType.FileSizeMb:
@@ -86,12 +86,12 @@ internal static class RuleEvaluator
         return type switch
         {
             ConditionType.VideoCodec => Text(info.VideoCodec),
-            ConditionType.AudioCodec => Text(info.AudioCodec),
+            ConditionType.AudioCodec => List(AudioCodecs(info).Select(Text)),
             ConditionType.Container => Text(info.Container),
             ConditionType.VideoHeight => Number(info.Height),
             ConditionType.VideoWidth => Number(info.Width),
             ConditionType.VideoBitrateKbps => Number(info.VideoBitrateKbps),
-            ConditionType.AudioChannels => Number(info.AudioChannels),
+            ConditionType.AudioChannels => List(AudioChannels(info).Select(Number)),
             ConditionType.VideoFramerate => Number(info.VideoFramerate),
             ConditionType.FileSizeMb => Number(info.FileSizeMb),
             ConditionType.VideoDurationMinutes => Number(info.DurationSeconds / 60.0),
@@ -104,6 +104,103 @@ internal static class RuleEvaluator
     private static string Text(string value)
     {
         return string.IsNullOrEmpty(value) ? "(none)" : value;
+    }
+
+    // Audio conditions are answered over every track, so the log has to show every track too — otherwise
+    // "AudioChannels GreaterThan 2 | actual: 2 => FAIL" on a file that also carries a 5.1 track is a lie.
+    private static string List(IEnumerable<string> values)
+    {
+        var joined = string.Join(", ", values);
+        return string.IsNullOrEmpty(joined) ? "(none)" : joined;
+    }
+
+    // Every audio track, falling back to the scalar first-track fields when the probe reported no
+    // per-stream detail — which is also what keeps a file with no audio behaving exactly as before.
+    private static List<string> AudioCodecs(MediaProbeInfo info)
+    {
+        return info.AudioStreams.Count > 0
+            ? info.AudioStreams.Select(a => a.Codec).ToList()
+            : new List<string> { info.AudioCodec };
+    }
+
+    private static List<double> AudioChannels(MediaProbeInfo info)
+    {
+        return info.AudioStreams.Count > 0
+            ? info.AudioStreams.Select(a => (double)a.Channels).ToList()
+            : new List<double> { info.AudioChannels };
+    }
+
+    /// <summary>
+    /// Answers an audio condition about the FILE rather than about one track.
+    /// <para>
+    /// The scalar AudioCodec/AudioChannels fields are copied from the first audio stream, so every audio
+    /// condition only ever saw track one. On a remux whose commentary is muxed ahead of the main track —
+    /// routine — "AudioChannels GreaterThan 2" and "AudioCodec Equals truehd" both answered about the
+    /// 2-channel commentary and the file was never queued, while the compliance check next door was
+    /// already reading every track and disagreeing.
+    /// </para>
+    /// <para>
+    /// A positive operator means "some track is like this"; a negating one means "no track is", which is
+    /// <c>All</c> over a predicate that is itself negating. The list is never empty — see
+    /// <see cref="AudioCodecs"/> — because <c>All</c> over an empty sequence is vacuously true and would
+    /// make "AudioCodec NotEquals aac" match a silent file, exactly what the guard inside
+    /// <c>EvaluateString</c> exists to prevent.
+    /// </para>
+    /// </summary>
+    private static bool AcrossTracks<T>(ComparisonOperator op, IReadOnlyList<T> tracks, Func<T, bool> matches)
+    {
+        return op is ComparisonOperator.NotEquals or ComparisonOperator.NotIn or ComparisonOperator.NotExists
+            ? tracks.All(matches)
+            : tracks.Any(matches);
+    }
+
+    /// <summary>
+    /// Compares a container the way an admin means it.
+    /// <para>
+    /// ffprobe names a container after its demuxer — "matroska,webm" for mkv, "mov,mp4,m4a,3gp,3g2,mj2"
+    /// for mp4 — while the UI tells the admin to type "mkv". Comparing those two literally meant
+    /// "Container Equals mkv" matched no mkv at all, and the negating operators turned that into the
+    /// opposite failure: "Container NotEquals mp4" was true for <em>every</em> mp4, so a rule written to
+    /// catch what is not yet mp4 queued the entire library. The compliance checker already knew how to
+    /// compare these; this uses the same rules.
+    /// </para>
+    /// </summary>
+    private static bool EvaluateContainer(string sourceContainer, RuleCondition condition)
+    {
+        sourceContainer ??= string.Empty;
+
+        // Same two guards as EvaluateString: an unfinished condition is not a filter, and an absent value
+        // can only be reasoned about with Exists/NotExists.
+        if (string.IsNullOrWhiteSpace(condition.Value)
+            && condition.Operator is ComparisonOperator.Equals or ComparisonOperator.NotEquals
+                or ComparisonOperator.In or ComparisonOperator.NotIn)
+        {
+            return false;
+        }
+
+        if (sourceContainer.Length == 0
+            && condition.Operator is not (ComparisonOperator.Exists or ComparisonOperator.NotExists))
+        {
+            return false;
+        }
+
+        switch (condition.Operator)
+        {
+            case ComparisonOperator.Equals:
+                return ProfileComplianceChecker.ContainerIs(sourceContainer, condition.Value);
+            case ComparisonOperator.NotEquals:
+                return !ProfileComplianceChecker.ContainerIs(sourceContainer, condition.Value);
+            case ComparisonOperator.In:
+                return SplitList(condition.Value).Any(v => ProfileComplianceChecker.ContainerIs(sourceContainer, v));
+            case ComparisonOperator.NotIn:
+                return !SplitList(condition.Value).Any(v => ProfileComplianceChecker.ContainerIs(sourceContainer, v));
+            case ComparisonOperator.Exists:
+                return sourceContainer.Length > 0;
+            case ComparisonOperator.NotExists:
+                return sourceContainer.Length == 0;
+            default:
+                return false;
+        }
     }
 
     private static string Number(double value)

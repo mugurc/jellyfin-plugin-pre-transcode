@@ -54,29 +54,37 @@ internal static class FfmpegCommandBuilder
         args.Add("0:V:0");
         args.Add("-map");
         args.Add("0:a?");
-        if (mkvLike && !IsWebm(profile.Container))
+        // One decision about which source subtitle tracks travel, made here and reused when their output
+        // codecs are chosen. They used to be decided twice — a wholesale "0:s?" for mkv against a
+        // per-track loop for mp4 — and the codec assignment then indexed the SOURCE tracks while ffmpeg
+        // numbered the OUTPUT ones. With a PGS track ahead of a subrip track in an mp4 profile, only the
+        // subrip was mapped but "-c:s:0" was computed from the PGS track, came out "copy", and ffmpeg
+        // refused to put subrip in mp4 — the whole encode failed on a subtitle nobody asked to keep.
+        var subtitles = SubtitlesToCarry(profile.Container, source);
+        var mapsEverySubtitle = mkvLike && !IsWebm(profile.Container) && source.SubtitleStreams.Count == 0;
+
+        if (mapsEverySubtitle)
         {
-            // True Matroska (mkv) can hold every subtitle format (text and image) plus attachments, so
-            // carry all subtitle tracks and any embedded fonts (needed for ASS/SSA to render) across.
+            // The probe reported no per-stream subtitle detail, so there is nothing to select from; keep
+            // the old wholesale mapping rather than dropping tracks that may well be there.
             args.Add("-map");
             args.Add("0:s?");
+        }
+        else
+        {
+            foreach (var index in subtitles)
+            {
+                args.Add("-map");
+                args.Add("0:s:" + N(index));
+            }
+        }
+
+        if (mkvLike && !IsWebm(profile.Container))
+        {
+            // Matroska carries embedded fonts, which ASS/SSA needs to render as authored. (webm holds no
+            // attachments, and mp4's are not worth carrying.)
             args.Add("-map");
             args.Add("0:t?");
-        }
-        else if (mp4Like || IsWebm(profile.Container))
-        {
-            // mp4/mov (mov_text) and webm (webvtt) can store only TEXT subtitles. Map those individually
-            // and leave image subtitles (PGS/VOBSUB) out — the container cannot store them and they cannot
-            // be converted to text, so mapping them would abort the whole encode. (webm also holds no
-            // attachments, so its fonts are not mapped either.)
-            for (var i = 0; i < source.SubtitleStreams.Count; i++)
-            {
-                if (IsTextSubtitle(source.SubtitleStreams[i].Codec))
-                {
-                    args.Add("-map");
-                    args.Add("0:s:" + N(i));
-                }
-            }
         }
 
         args.Add("-map_metadata");
@@ -96,7 +104,7 @@ internal static class FfmpegCommandBuilder
             args.Add("-c:v");
             args.Add(profile.VideoEncoder);
 
-            if (!string.IsNullOrWhiteSpace(profile.Preset) && EncoderAcceptsPreset(profile.VideoEncoder))
+            if (!string.IsNullOrWhiteSpace(profile.Preset) && EncoderAcceptsPreset(profile.VideoEncoder, profile.Preset))
             {
                 args.Add("-preset");
                 args.Add(profile.Preset.Trim());
@@ -162,7 +170,7 @@ internal static class FfmpegCommandBuilder
         // ---- subtitles ----
         if (mkvLike && !IsWebm(profile.Container))
         {
-            AddSubtitles(args, profile.Container, source);
+            AddSubtitles(args, profile.Container, source, subtitles, mapsEverySubtitle);
         }
         else if ((mp4Like || IsWebm(profile.Container)) && source.SubtitleStreams.Any(s => IsTextSubtitle(s.Codec)))
         {
@@ -303,22 +311,52 @@ internal static class FfmpegCommandBuilder
     // A Matroska output cannot hold every subtitle codec. An mp4 source's mov_text tracks in particular
     // make the muxer reject the header outright, which kills the whole transcode seconds in, so a track
     // the container cannot store is converted to a text format it can rather than copied.
-    private static void AddSubtitles(List<string> args, string container, MediaProbeInfo source)
+    private static void AddSubtitles(
+        List<string> args, string container, MediaProbeInfo source, List<int> subtitles, bool mapsEverySubtitle)
     {
-        if (source.SubtitleStreams.Count == 0)
+        if (mapsEverySubtitle || subtitles.Count == 0)
         {
-            // No per-stream info from the probe: nothing is mapped in practice, and copy stays correct.
+            // Either the probe gave no per-stream detail (so everything was mapped wholesale and copy is
+            // the only safe blanket answer) or nothing is being carried at all.
             args.Add("-c:s");
             args.Add("copy");
             return;
         }
 
+        // Indexed by OUTPUT position, which is the order the tracks were mapped in — not by source index.
         var textCodec = IsWebm(container) ? "webvtt" : "srt";
+        for (var output = 0; output < subtitles.Count; output++)
+        {
+            var codec = source.SubtitleStreams[subtitles[output]].Codec;
+            args.Add("-c:s:" + N(output));
+            args.Add(CanStoreSubtitle(container, codec) ? "copy" : textCodec);
+        }
+    }
+
+    /// <summary>
+    /// The source subtitle tracks this container can actually end up holding: the ones it can store as
+    /// they are, plus text ones it can hold after conversion.
+    /// <para>
+    /// An image subtitle the container cannot store is left behind, because there is nowhere for it to
+    /// go — it cannot be converted to text. Matroska used to map every track wholesale and then route
+    /// anything it did not recognise to srt, so an xsub track (bitmap subtitles from an AVI/DivX source,
+    /// which the hard-coded list does not name) made ffmpeg abort the entire encode with "Subtitle
+    /// encoding currently only possible from text to text or bitmap to bitmap".
+    /// </para>
+    /// </summary>
+    private static List<int> SubtitlesToCarry(string container, MediaProbeInfo source)
+    {
+        var carried = new List<int>();
         for (var i = 0; i < source.SubtitleStreams.Count; i++)
         {
-            args.Add("-c:s:" + N(i));
-            args.Add(CanStoreSubtitle(container, source.SubtitleStreams[i].Codec) ? "copy" : textCodec);
+            var codec = source.SubtitleStreams[i].Codec;
+            if (CanStoreSubtitle(container, codec) || IsTextSubtitle(codec))
+            {
+                carried.Add(i);
+            }
         }
+
+        return carried;
     }
 
     // Text-based subtitle codecs, which can be transcoded to another text format (srt, webvtt, mov_text).
@@ -338,6 +376,15 @@ internal static class FfmpegCommandBuilder
         if (IsWebm(container))
         {
             return Same(codec, "webvtt");
+        }
+
+        // mp4/mov store timed text and nothing else. This used to fall through to the Matroska list, so a
+        // subrip track was reported as storable and copied straight into an mp4 — which ffmpeg refuses
+        // ("codec not currently supported in container"), failing the encode. Converting it to mov_text,
+        // which is what saying "no" here produces, is the thing that actually works.
+        if (IsMp4Like(container))
+        {
+            return Same(codec, "mov_text");
         }
 
         return codec.ToLowerInvariant() switch
@@ -368,13 +415,30 @@ internal static class FfmpegCommandBuilder
         }
     }
 
-    // The VAAPI and VideoToolbox encoders have no -preset option and abort if given one (they use
-    // -compression_level / -q:v instead). nvenc, qsv, amf and the software encoders (libx264/x265/svtav1)
-    // all accept -preset — verified against the bundled ffmpeg for nvenc/qsv/amf — so only the two
-    // preset-less families are excluded.
-    private static bool EncoderAcceptsPreset(string encoder)
+    // Which encoders can be handed -preset, and with what.
+    //
+    // VAAPI and VideoToolbox have no -preset at all and abort if given one (they use
+    // -compression_level / -q:v). Neither do libvpx-vp9, libaom-av1 or librav1e, which express speed as
+    // -cpu-used / -speed. libsvtav1 has one but it is an INTEGER — and the profile editor pre-fills the
+    // field with the previous encoder's value, so switching libx264 -> libsvtav1 carried "medium" over
+    // and every job for that profile died before encoding a frame with "ffmpeg exited with code 1".
+    // Anything left over (nvenc, qsv, amf, libx264/x265) takes a named preset.
+    private static bool EncoderAcceptsPreset(string encoder, string preset)
     {
-        return !Has(encoder, "vaapi") && !Has(encoder, "videotoolbox");
+        if (Has(encoder, "vaapi") || Has(encoder, "videotoolbox")
+            || Has(encoder, "libvpx") || Has(encoder, "libaom") || Has(encoder, "librav1e"))
+        {
+            return false;
+        }
+
+        // SVT-AV1 numbers its presets. A named one is not a value it can use, so it is dropped rather
+        // than passed on to fail the encode.
+        if (Has(encoder, "svtav1") || Has(encoder, "svt_av1"))
+        {
+            return int.TryParse(preset, NumberStyles.Integer, CultureInfo.InvariantCulture, out _);
+        }
+
+        return true;
     }
 
     // The constant-quality flag is encoder-specific; there is no universal ffmpeg option.

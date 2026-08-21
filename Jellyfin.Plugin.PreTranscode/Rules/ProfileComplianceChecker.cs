@@ -149,13 +149,25 @@ internal static class ProfileComplianceChecker
 
     private static bool ContainerMatches(string sourceContainer, string targetContainer)
     {
-        sourceContainer ??= string.Empty;
-
         // An empty target container means "let the builder decide", and the builder (MuxerFor) defaults
         // an empty container to mp4. Comparing against "" literally never matched a real ffprobe
         // format_name, so the encoder's own mp4 output was flagged non-compliant forever; and a null
         // container would throw below. Normalise to the builder's default first.
-        targetContainer = string.IsNullOrWhiteSpace(targetContainer) ? "mp4" : targetContainer;
+        return ContainerIs(sourceContainer, string.IsNullOrWhiteSpace(targetContainer) ? "mp4" : targetContainer);
+    }
+
+    /// <summary>
+    /// Whether a container name the admin would type ("mkv") describes what ffprobe reported
+    /// ("matroska,webm"). Shared with the rule engine, which was comparing the two literally and so
+    /// matched neither mkv nor mp4.
+    /// </summary>
+    /// <param name="sourceContainer">The probed container, as ffprobe's comma-separated format name.</param>
+    /// <param name="targetContainer">The container name being tested for.</param>
+    /// <returns><c>true</c> when they describe the same container.</returns>
+    internal static bool ContainerIs(string sourceContainer, string targetContainer)
+    {
+        sourceContainer ??= string.Empty;
+        targetContainer ??= string.Empty;
 
         if (Same(sourceContainer, targetContainer))
         {

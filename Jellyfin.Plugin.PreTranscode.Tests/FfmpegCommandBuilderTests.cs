@@ -357,4 +357,87 @@ public class FfmpegCommandBuilderTests
         Assert.Contains("0:V:0", args, StringComparer.Ordinal);
         Assert.DoesNotContain("0:v:0", args, StringComparer.Ordinal);
     }
+
+    // libvpx-vp9, libaom-av1 and librav1e have no -preset at all; libsvtav1 has one but it is an integer,
+    // and the profile editor pre-fills the field with the previous encoder's value, so switching
+    // libx264 -> libsvtav1 carried "medium" over and every job died before encoding a frame.
+    [Theory]
+    [InlineData("libvpx-vp9", "good", false)]
+    [InlineData("libaom-av1", "8", false)]
+    [InlineData("librav1e", "6", false)]
+    [InlineData("libsvtav1", "medium", false)]
+    [InlineData("libsvtav1", "8", true)]
+    [InlineData("libx265", "slow", true)]
+    [InlineData("hevc_nvenc", "p4", true)]
+    public void PresetIsOnlyPassedToEncodersThatTakeIt(string encoder, string preset, bool expected)
+    {
+        var args = FfmpegCommandBuilder.BuildArguments(
+            new EncodingProfile { VideoEncoder = encoder, Preset = preset, AudioCodec = "copy", Container = "matroska" },
+            new MediaProbeInfo { VideoCodec = "h264", Width = 1920, Height = 1080 },
+            new List<ResolutionPreset>(),
+            "/media/Movie.mkv",
+            "/tmp/out.mkv",
+            Array.Empty<string>());
+
+        Assert.Equal(expected, args.Contains("-preset", StringComparer.Ordinal));
+    }
+
+    // Matroska used to map every subtitle track wholesale and then route anything its hard-coded list did
+    // not name to srt. xsub — bitmap subtitles from an AVI/DivX source — is exactly that, and ffmpeg
+    // aborts the whole encode with "only possible from text to text or bitmap to bitmap".
+    [Fact]
+    public void ImageSubtitleTheContainerCannotStore_IsLeftBehindRatherThanConvertedToText()
+    {
+        var source = new MediaProbeInfo
+        {
+            VideoCodec = "h264", Width = 1920, Height = 1080,
+            SubtitleStreams = new List<SubtitleStreamInfo>
+            {
+                new SubtitleStreamInfo { Codec = "xsub" },
+                new SubtitleStreamInfo { Codec = "subrip" }
+            }
+        };
+
+        var args = FfmpegCommandBuilder.BuildArguments(
+            new EncodingProfile { VideoEncoder = "libx265", AudioCodec = "copy", Container = "matroska" },
+            source,
+            new List<ResolutionPreset>(),
+            "/media/Movie.avi",
+            "/tmp/out.mkv",
+            Array.Empty<string>());
+
+        // Only the subrip track travels, and it is the output's subtitle stream 0.
+        Assert.Contains("0:s:1", args, StringComparer.Ordinal);
+        Assert.DoesNotContain("0:s:0", args, StringComparer.Ordinal);
+        Assert.Contains("-c:s:0", args, StringComparer.Ordinal);
+        Assert.DoesNotContain("-c:s:1", args, StringComparer.Ordinal);
+    }
+
+    // mp4 holds timed text and nothing else. The image track is left behind — there is nowhere for it to
+    // go — and the text track that does travel is converted rather than copied.
+    [Fact]
+    public void Mp4CarriesOnlyTheTextSubtitle_AndConvertsIt()
+    {
+        var source = new MediaProbeInfo
+        {
+            VideoCodec = "h264", Width = 1920, Height = 1080,
+            SubtitleStreams = new List<SubtitleStreamInfo>
+            {
+                new SubtitleStreamInfo { Codec = "hdmv_pgs_subtitle" },
+                new SubtitleStreamInfo { Codec = "subrip" }
+            }
+        };
+
+        var args = FfmpegCommandBuilder.BuildArguments(
+            new EncodingProfile { VideoEncoder = "libx264", AudioCodec = "copy", Container = "mp4" },
+            source,
+            new List<ResolutionPreset>(),
+            "/media/Movie.mkv",
+            "/tmp/out.mp4",
+            Array.Empty<string>());
+
+        Assert.Contains("0:s:1", args, StringComparer.Ordinal);
+        Assert.DoesNotContain("0:s:0", args, StringComparer.Ordinal);
+        Assert.Contains("mov_text", args, StringComparer.Ordinal);
+    }
 }
