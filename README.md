@@ -150,7 +150,11 @@ All settings live on the plugin's page (**Dashboard → Plugins → Pre-Transcod
 - **Separate directory** *(default, safest)* — writes the result to a chosen output directory (or
   alongside the source with a suffix), leaving originals untouched.
 - **Replace in place** — after verification, replaces the original (deleting it if the container/
-  extension changed). Reclaims space, irreversible.
+  extension changed). Reclaims space, irreversible. When the container change renames the file
+  (`Movie.mp4` → `Movie.mkv`), the plugin **repoints the Jellyfin item at the new path** and queues a
+  re-probe, so the item plays immediately instead of failing with a file-not-found error until the next
+  library scan. Note that Jellyfin derives an item's id from its path, so its next full scan still
+  re-creates the renamed item — keeping the container unchanged avoids that.
 - **Add as alternate version** — writes a companion file next to the original and then **registers it
   as a Jellyfin alternate version** the same way the dashboard's *Merge Versions* does: a database link
   (the source stays the primary version), **not** a filename convention — so your original file keeps

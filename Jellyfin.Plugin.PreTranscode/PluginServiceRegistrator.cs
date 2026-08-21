@@ -21,6 +21,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<IMediaProber, MediaProber>();
         serviceCollection.AddSingleton<IJobQueue, JobQueue>();
         serviceCollection.AddSingleton<AlternateVersionMerger>();
+        serviceCollection.AddSingleton<ReplacedItemUpdater>();
         serviceCollection.AddSingleton<TranscodeExecutor>();
 
         serviceCollection.AddSingleton<QueueProcessor>();

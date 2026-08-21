@@ -372,7 +372,7 @@
             var OM_HINTS = {
                 SeparateDirectory: 'Writes a new file and leaves your originals completely untouched. Safest.',
                 AddAsAlternateVersion: 'Keeps both and registers the transcode as an alternate version of the same item (one movie, a version selector).',
-                ReplaceInPlace: '⚠ Replaces the original file after the output is verified. Reclaims space but is irreversible.'
+                ReplaceInPlace: '⚠ Replaces the original file after the output is verified. Reclaims space but is irreversible. If the container differs from the source\'s extension the file is renamed (Movie.mp4 \u2192 Movie.mkv) and the Jellyfin item is repointed at it; Jellyfin still re-creates the renamed item at its next full library scan.'
             };
             function syncOutput() {
                 var m = om.select.value;

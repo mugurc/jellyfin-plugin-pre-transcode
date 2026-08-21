@@ -28,6 +28,7 @@ internal sealed class TranscodeExecutor
     private readonly IMediaEncoder _mediaEncoder;
     private readonly IFfmpegCapabilitiesService _capabilities;
     private readonly AlternateVersionMerger _merger;
+    private readonly ReplacedItemUpdater _libraryUpdater;
     private readonly string _tempDirectory;
     private readonly ILogger<TranscodeExecutor> _logger;
 
@@ -37,6 +38,7 @@ internal sealed class TranscodeExecutor
         IMediaEncoder mediaEncoder,
         IFfmpegCapabilitiesService capabilities,
         AlternateVersionMerger merger,
+        ReplacedItemUpdater libraryUpdater,
         IApplicationPaths applicationPaths,
         ILogger<TranscodeExecutor> logger)
     {
@@ -45,6 +47,7 @@ internal sealed class TranscodeExecutor
         _mediaEncoder = mediaEncoder;
         _capabilities = capabilities;
         _merger = merger;
+        _libraryUpdater = libraryUpdater;
         _tempDirectory = Path.Combine(applicationPaths.DataPath, "pretranscode", "tmp");
         _logger = logger;
     }
@@ -205,6 +208,17 @@ internal sealed class TranscodeExecutor
             }
 
             var finalPath = OutputApplier.Apply(profile, job.SourcePath, tempFile);
+
+            // The output's extension comes from the profile's container, so replacing Movie.mp4 under an
+            // mkv profile writes Movie.mkv and deletes Movie.mp4 — a rename as far as Jellyfin is
+            // concerned, leaving its database row pointing at a file that no longer exists and every
+            // playback failing until some later library scan. Repoint the row before the job is reported
+            // done, and on CancellationToken.None: the file has already been swapped, so leaving the
+            // library pointing at a deleted path is not an acceptable outcome of cancelling.
+            if (profile.OutputMode == OutputHandlingMode.ReplaceInPlace)
+            {
+                await _libraryUpdater.TryUpdateAsync(job.SourcePath, finalPath, CancellationToken.None).ConfigureAwait(false);
+            }
 
             job.Status = JobStatus.Completed;
             job.Progress = 100;
