@@ -43,13 +43,20 @@ internal static class FfmpegCommandBuilder
         var mp4Like = IsMp4Like(profile.Container);
 
         // "0:V:0", not "0:v:0". Lowercase v matches every video stream INCLUDING an attached picture —
-        // embedded cover art, which in mp4/mov is routinely stream #0:0. MediaProber deliberately skips
-        // attached_pic streams when it decides what this file is, so the two disagreed: the prober read
-        // the real 1080p h264 track and matched a rule on it, while ffmpeg encoded the 600x900 poster
-        // thumbnail as the video and carried the full-length audio alongside it. The result muxes and
-        // exits 0, and OutputVerifier only compares duration — which the audio track satisfies — so under
+        // embedded cover art — while MediaProber deliberately skips attached_pic streams when it decides
+        // what a file is. So the two could disagree about which stream is the video, and where they did,
+        // the prober read the real h264 track and matched a rule on it while ffmpeg encoded the poster
+        // thumbnail as the video and carried the full-length audio alongside it. That muxes and exits 0,
+        // and OutputVerifier only compared duration — which the audio satisfies on its own — so under
         // Replace in place the original film was deleted and replaced by a still image with sound.
-        // Uppercase V is the specifier that excludes attached pictures.
+        //
+        // Measured, because the ordering is what decides whether this can happen at all: it needs an
+        // attached picture at a LOWER index than the real video, and neither common muxer produces one.
+        // ffmpeg writes an mp4 attached picture as an iTunes covr atom, and mov_read_covr appends that
+        // stream when it reaches udta — after the trak boxes — so the artwork is last; Matroska keeps
+        // cover art as an attachment rather than a video track. On files from normal tools 0:v:0 and
+        // 0:V:0 select the same stream. This is a guard against unusually ordered files, not a fix for
+        // something that was happening routinely. Uppercase V excludes attached pictures.
         args.Add("-map");
         args.Add("0:V:0");
         args.Add("-map");
