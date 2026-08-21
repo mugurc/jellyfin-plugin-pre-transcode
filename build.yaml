@@ -1,7 +1,7 @@
 ---
 name: "Pre-Transcode"
 guid: "8da245f6-7244-449b-9f32-46043f34b5f0"
-version: "0.7.0.0"
+version: "0.8.0.0"
 targetAbi: "10.11.0.0"
 framework: "net9.0"
 overview: "Pre-transcode media to an admin-defined compatibility baseline."
