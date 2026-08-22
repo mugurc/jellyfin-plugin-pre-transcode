@@ -6,19 +6,28 @@
 [![.NET](https://img.shields.io/badge/.NET-9.0-512BD4?style=flat-square&logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
 [![License](https://img.shields.io/badge/license-GPLv3-blue?style=flat-square)](LICENSE)
 
-A Jellyfin plugin that **proactively pre-transcodes** your library media, in the background,
-**once**, into a format you define as your *compatibility baseline* — so the server does not
-have to live-transcode the same files on **every** playback.
+**Transcode it once, in the background, instead of every time somebody presses play.**
 
-Everything is admin-configurable from the Jellyfin dashboard. **Nothing is hardcoded**: the codec,
-encoder, container, preset and tone-map dropdowns are populated by probing your server's actual
-`ffmpeg` binary, so any codec your ffmpeg supports shows up automatically.
+Pre-Transcode converts your library to a compatibility baseline you define, so Jellyfin stops
+live-transcoding the same files over and over. Nothing is hardcoded — the codec, encoder,
+container, preset and tone-map dropdowns are built by probing your server's own `ffmpeg`, so
+whatever your build supports is what you can pick.
 
-> **Status:** feature-complete and validated end-to-end against real ffmpeg on Jellyfin 10.11,
-> but young. Test on a copy of your media first and start with the default **Separate directory**
-> output policy (which never touches your originals).
+![The plugin's settings page in the Jellyfin dashboard](/docs/image.png)
 
-![image](/docs/image.png)
+### Install
+
+In Jellyfin: **Dashboard → Plugins → Repositories → +**, add this URL, then install
+**Pre-Transcode** from the catalogue and restart:
+
+```
+https://raw.githubusercontent.com/mugurc/jellyfin-plugin-pre-transcode/main/manifest.json
+```
+
+> **Read this first.** The plugin is young — feature-complete and validated end-to-end against
+> real ffmpeg on Jellyfin 10.11, but young. Test on a copy of your media, and start with the
+> default **Separate directory** output policy, which never touches your originals. The
+> **Replace in place** policy deletes the source after the new file is verified.
 
 ## Why?
 
@@ -101,14 +110,8 @@ containers, library-aware rules, and everything configured from the Jellyfin das
 
 ### Option A — plugin repository (recommended)
 
-In Jellyfin: **Dashboard → Plugins → Repositories → +**, and add this URL:
-
-```
-https://raw.githubusercontent.com/mugurc/jellyfin-plugin-pre-transcode/main/manifest.json
-```
-
-Then install **Pre-Transcode** from **Catalog** and restart the server. Installing from the
-repository (rather than side-loading) also lets Jellyfin show the plugin's details and offer updates.
+The three steps at the top of this page. Installing from the repository rather than side-loading
+also lets Jellyfin show the plugin's details and offer updates.
 
 ### Option B — manual
 
