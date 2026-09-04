@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text.RegularExpressions;
 
 namespace Jellyfin.Plugin.PreTranscode.Ffmpeg;
@@ -341,6 +342,67 @@ internal static partial class FfmpegOutputParser
         'S' => CodecMediaType.Subtitle,
         _ => CodecMediaType.Other
     };
+
+    /// <summary>
+    /// Parses the output of <c>ffmpeg -hwaccels</c> into the hardware decoders this build offers.
+    /// </summary>
+    /// <param name="hwaccelsOutput">Raw <c>ffmpeg -hwaccels</c> output.</param>
+    /// <returns>The method names (<c>cuda</c>, <c>vaapi</c>, <c>videotoolbox</c>, …), empty when none.</returns>
+    /// <remarks>
+    /// The list is what the binary was <em>built</em> with, not what the machine can actually open — a
+    /// container image built with cuda support still lists it on a host with no NVIDIA device. So this
+    /// answers "what may be offered", and the encode itself is where an unusable choice surfaces.
+    /// </remarks>
+    public static IReadOnlyList<string> ParseHardwareAccelerators(string hwaccelsOutput)
+    {
+        var methods = new List<string>();
+        if (string.IsNullOrEmpty(hwaccelsOutput))
+        {
+            return methods;
+        }
+
+        // ffmpeg prints a "Hardware acceleration methods:" header and then one bare name per line.
+        // Collecting only after the header keeps stray banner or warning lines out of the list; if the
+        // header is ever reworded the list comes back empty, which leaves hardware decoding switched
+        // off rather than offering something invented.
+        var collecting = false;
+        foreach (var line in SplitLines(hwaccelsOutput))
+        {
+            var trimmed = line.Trim();
+            if (!collecting)
+            {
+                collecting = trimmed.StartsWith("Hardware acceleration", StringComparison.OrdinalIgnoreCase);
+                continue;
+            }
+
+            if (trimmed.Length == 0)
+            {
+                continue;
+            }
+
+            if (IsMethodName(trimmed) && !methods.Contains(trimmed, StringComparer.OrdinalIgnoreCase))
+            {
+                methods.Add(trimmed);
+            }
+        }
+
+        return methods;
+    }
+
+    // A method name is a bare lowercase identifier (cuda, vaapi, d3d11va, videotoolbox). Anything with a
+    // space or punctuation is prose, not a name.
+    private static bool IsMethodName(string value)
+    {
+        foreach (var c in value)
+        {
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'))
+            {
+                return false;
+            }
+        }
+
+        return value.Length > 0;
+    }
 
     private static string[] SplitLines(string text)
     {

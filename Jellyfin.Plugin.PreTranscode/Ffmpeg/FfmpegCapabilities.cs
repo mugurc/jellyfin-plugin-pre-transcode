@@ -39,4 +39,10 @@ public class FfmpegCapabilities
     /// Gets or sets the available tone-mapping algorithms exposed by ffmpeg's tonemap filter.
     /// </summary>
     public IReadOnlyList<string> TonemapAlgorithms { get; set; } = Array.Empty<string>();
+
+    /// <summary>
+    /// Gets or sets the hardware decoding methods this ffmpeg build offers (<c>ffmpeg -hwaccels</c>).
+    /// What the binary was built with, which is not necessarily what this machine can open.
+    /// </summary>
+    public IReadOnlyList<string> HardwareAccelerators { get; set; } = Array.Empty<string>();
 }

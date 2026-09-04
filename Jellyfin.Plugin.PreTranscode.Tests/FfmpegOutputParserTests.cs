@@ -209,4 +209,45 @@ public class FfmpegOutputParserTests
         Assert.Contains("medium", info.Values);
         Assert.True(info.FromFfmpeg);
     }
+
+    // Real "ffmpeg -hwaccels" output from a jellyfin-ffmpeg build.
+    private const string HwaccelsOutput = """
+        Hardware acceleration methods:
+        vdpau
+        cuda
+        vaapi
+        qsv
+        drm
+        opencl
+        vulkan
+        """;
+
+    [Fact]
+    public void ParseHardwareAccelerators_ReadsEveryMethod()
+    {
+        var methods = FfmpegOutputParser.ParseHardwareAccelerators(HwaccelsOutput);
+
+        Assert.Equal(new[] { "vdpau", "cuda", "vaapi", "qsv", "drm", "opencl", "vulkan" }, methods);
+    }
+
+    // A build with no hardware support prints the header and nothing under it.
+    [Fact]
+    public void ParseHardwareAccelerators_HeaderOnly_IsEmpty()
+    {
+        Assert.Empty(FfmpegOutputParser.ParseHardwareAccelerators("Hardware acceleration methods:\n"));
+    }
+
+    // Without the header the list comes back empty, which leaves hardware decoding off rather than
+    // offering prose lines as if they were method names.
+    [Fact]
+    public void ParseHardwareAccelerators_NoHeader_IsEmpty()
+    {
+        Assert.Empty(FfmpegOutputParser.ParseHardwareAccelerators("Unrecognized option 'hwaccels'\ncuda\n"));
+    }
+
+    [Fact]
+    public void ParseHardwareAccelerators_EmptyOutput_IsEmpty()
+    {
+        Assert.Empty(FfmpegOutputParser.ParseHardwareAccelerators(string.Empty));
+    }
 }

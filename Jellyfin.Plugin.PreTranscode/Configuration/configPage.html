@@ -48,6 +48,11 @@
                         <input id="MaxConcurrentJobs" type="number" is="emby-input" min="1" max="32" />
                         <div class="fieldDescription">How many transcodes run at once. Each competes with the server for CPU &mdash; <b>1</b> is the safe default.</div>
                     </div>
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="HardwareDecoder">Hardware decoding</label>
+                        <select is="emby-select" id="HardwareDecoder" class="emby-select-withcolor emby-select"></select>
+                        <div class="fieldDescription">Decode the <i>source</i> on the GPU instead of the CPU (<code>-hwaccel</code>). This is separate from the encoder your profile picks &mdash; hardware decoding with a software encoder is a valid and often worthwhile combination, because on 4K HEVC material decoding is a large share of the work. <b>Off by default.</b> The list is what your ffmpeg was <i>built</i> with, which isn&rsquo;t proof this machine has the device &mdash; a method the host can&rsquo;t open makes every job fail with an ffmpeg error, so change one job&rsquo;s worth and check the queue page before leaving it on.</div>
+                    </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="FileStabilitySeconds" title="Guards in-progress downloads">File-stability window (seconds)</label>
                         <input id="FileStabilitySeconds" type="number" is="emby-input" min="0" max="3600" />
@@ -560,6 +565,22 @@
             document.getElementById('FileStabilitySeconds').value = c.FileStabilitySeconds;
             document.getElementById('MaxFinishedJobsKept').value = c.MaxFinishedJobsKept;
             document.getElementById('VerboseRuleLogging').checked = c.VerboseRuleLogging;
+            fillHardwareDecoders();
+        }
+        function fillHardwareDecoders() {
+            var sel = document.getElementById('HardwareDecoder');
+            var current = state.config.HardwareDecoder || '';
+            var methods = state.caps.HardwareAccelerators || [];
+            sel.innerHTML = '';
+            sel.appendChild(opt('', 'Off — decode in software', current));
+            if (methods.length) { sel.appendChild(opt('auto', 'auto — let ffmpeg choose', current)); }
+            methods.forEach(function (m) { sel.appendChild(opt(m, m, current)); });
+            // A saved value this ffmpeg no longer reports (the binary changed under it) must stay
+            // selectable, or opening the page would silently switch it off on the next save.
+            if (current && current !== 'auto' && methods.indexOf(current) < 0) {
+                sel.appendChild(opt(current, current + ' — not reported by this ffmpeg', current));
+            }
+            sel.value = current;
         }
         function saveGeneral() {
             var c = state.config;
@@ -569,6 +590,7 @@
             c.FileStabilitySeconds = parseInt(document.getElementById('FileStabilitySeconds').value, 10) || 0;
             c.MaxFinishedJobsKept = parseInt(document.getElementById('MaxFinishedJobsKept').value, 10) || 0;
             c.VerboseRuleLogging = document.getElementById('VerboseRuleLogging').checked;
+            c.HardwareDecoder = document.getElementById('HardwareDecoder').value;
             c.DefaultProfileId = document.getElementById('DefaultProfileId').value;
         }
 

@@ -89,6 +89,24 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool VerboseRuleLogging { get; set; }
 
     /// <summary>
+    /// Gets or sets the hardware decoder ffmpeg should use to read the source (<c>-hwaccel</c>): one of the
+    /// methods the server's ffmpeg reports, <c>auto</c> to let ffmpeg choose, or empty (the default) to
+    /// decode in software.
+    /// <para>
+    /// A server-wide setting rather than a per-profile one, because it describes the machine, not the
+    /// target format: the same GPU decodes the source whichever profile is encoding it. It only affects
+    /// <em>decoding</em>; the encoder is still whatever the profile names, so software encoding with
+    /// hardware decoding is a valid and useful combination on a 4K HEVC library.
+    /// </para>
+    /// <para>
+    /// Off by default and deliberately so. A method the binary lists but the host cannot open (a cuda
+    /// build on a machine with no NVIDIA device) fails the encode, and the plugin can delete originals
+    /// under the Replace-in-place policy — so this is an opt-in the admin makes after seeing it work.
+    /// </para>
+    /// </summary>
+    public string HardwareDecoder { get; set; } = string.Empty;
+
+    /// <summary>
     /// Gets or sets the id of the default <see cref="EncodingProfile"/> used when a library has no override.
     /// </summary>
     public string DefaultProfileId { get; set; } = string.Empty;

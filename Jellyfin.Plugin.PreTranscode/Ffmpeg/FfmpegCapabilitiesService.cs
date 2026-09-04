@@ -165,6 +165,17 @@ internal sealed class FfmpegCapabilitiesService : IFfmpegCapabilitiesService, ID
             _logger.LogWarning(ex, "Failed to probe tonemap filter");
         }
 
+        var hwaccelsOutput = string.Empty;
+        try
+        {
+            hwaccelsOutput = await ProcessRunner.RunAsync(path, "-hide_banner -hwaccels", ProbeTimeoutMs, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Non-fatal, like the tonemap probe: an empty list simply offers no hardware decoding.
+            _logger.LogWarning(ex, "Failed to probe hardware acceleration methods");
+        }
+
         var codecs = FfmpegOutputParser.ParseCodecs(codecsOutput);
 
         return new FfmpegCapabilities
@@ -174,7 +185,8 @@ internal sealed class FfmpegCapabilitiesService : IFfmpegCapabilitiesService, ID
             VideoCodecs = codecs.Where(c => c.MediaType == CodecMediaType.Video).ToList(),
             AudioCodecs = codecs.Where(c => c.MediaType == CodecMediaType.Audio).ToList(),
             Containers = FfmpegOutputParser.ParseMuxers(muxersOutput),
-            TonemapAlgorithms = FfmpegOutputParser.ParseTonemapModes(tonemapOutput)
+            TonemapAlgorithms = FfmpegOutputParser.ParseTonemapModes(tonemapOutput),
+            HardwareAccelerators = FfmpegOutputParser.ParseHardwareAccelerators(hwaccelsOutput)
         };
     }
 }

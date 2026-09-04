@@ -31,13 +31,23 @@ internal static class FfmpegCommandBuilder
         IReadOnlyList<ResolutionPreset> presets,
         string inputPath,
         string outputPath,
-        IReadOnlyList<string>? encoderPixelFormats = null)
+        IReadOnlyList<string>? encoderPixelFormats = null,
+        string? hardwareDecoder = null)
     {
+        var args = new List<string> { "-y", "-hide_banner" };
+
+        // -hwaccel is an INPUT option: it must precede the -i it applies to, which is why it is emitted
+        // here rather than alongside the video settings it otherwise belongs with.
+        AddHardwareDecoder(args, profile, hardwareDecoder);
+
         // Restrict the input to local-file protocols. The source is always a verified local library file,
         // so this changes nothing for legitimate input, but it makes the "never fetch a remote URL / read
         // an arbitrary file via concat:/subfile:/http:" property explicit and survivable across refactors
         // instead of relying solely on the caller's File.Exists gate.
-        var args = new List<string> { "-y", "-hide_banner", "-protocol_whitelist", "file,crypto,data", "-i", inputPath };
+        args.Add("-protocol_whitelist");
+        args.Add("file,crypto,data");
+        args.Add("-i");
+        args.Add(inputPath);
 
         var mkvLike = IsMatroska(profile.Container);
         var mp4Like = IsMp4Like(profile.Container);
@@ -282,6 +292,51 @@ internal static class FfmpegCommandBuilder
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Emits <c>-hwaccel</c> so ffmpeg decodes the source on the GPU instead of the CPU.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Nothing is emitted for a <c>copy</c> video profile: no frames are decoded at all there, so the
+    /// only thing initialising a hardware device could do is fail.
+    /// </para>
+    /// <para>
+    /// Deliberately without <c>-hwaccel_output_format</c>. Naming an output format keeps the decoded
+    /// frames in GPU memory, which is faster still — and which every filter this builder emits then
+    /// refuses to touch: the scale and tonemap chains are software filters and cannot read a hardware
+    /// frame. Leaving it off makes ffmpeg copy frames back to system memory after decoding, so hardware
+    /// decoding composes with resolution caps and tone-mapping instead of being mutually exclusive with
+    /// them. The copy costs some of the win; a broken filter chain would cost all of it.
+    /// </para>
+    /// <para>
+    /// The value reaches ffmpeg through ArgumentList, so it is never shell-interpreted, but it is still
+    /// restricted to the shape of a real method name — an admin-editable config string should not be
+    /// able to smuggle a second ffmpeg option in via a space.
+    /// </para>
+    /// </remarks>
+    /// <param name="args">The argument list being built.</param>
+    /// <param name="profile">The target profile.</param>
+    /// <param name="hardwareDecoder">The configured method, or null/empty for software decoding.</param>
+    private static void AddHardwareDecoder(List<string> args, EncodingProfile profile, string? hardwareDecoder)
+    {
+        if (string.IsNullOrWhiteSpace(hardwareDecoder) || IsCopy(profile.VideoCodec))
+        {
+            return;
+        }
+
+        var method = hardwareDecoder.Trim().ToLowerInvariant();
+        foreach (var c in method)
+        {
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'))
+            {
+                return;
+            }
+        }
+
+        args.Add("-hwaccel");
+        args.Add(method);
     }
 
     // A "copy" audio profile, honoured as far as the output container allows. Copy still means copy for

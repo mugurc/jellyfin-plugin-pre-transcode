@@ -200,7 +200,13 @@ internal sealed class TranscodeExecutor
             var encoderPixelFormats = await GetEncoderPixelFormatsAsync(profile, cancellationToken).ConfigureAwait(false);
 
             var arguments = FfmpegCommandBuilder.BuildArguments(
-                profile, probe, config.ResolutionPresets, job.SourcePath, tempFile, encoderPixelFormats);
+                profile,
+                probe,
+                config.ResolutionPresets,
+                job.SourcePath,
+                tempFile,
+                encoderPixelFormats,
+                config.HardwareDecoder);
             _logger.LogInformation("Transcoding {Path} -> {Command}", job.SourcePath, FfmpegCommandBuilder.ToCommandLine(arguments));
 
             SetDetail(job, "transcoding");

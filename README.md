@@ -52,6 +52,12 @@ to live-transcode that file again.
   `p010le` for the NVENC/QSV/AMF families, none at all for `h264_qsv`) and 10-bit is kept for HEVC/AV1/VP9
   targets and for HDR that isn't being tone-mapped. H.264 still gets 8-bit, because its 10-bit profile
   isn't hardware-decodable on most clients. Overridable per profile.
+- **Hardware decoding, separately from hardware encoding.** Point `-hwaccel` at your GPU so the *source*
+  is decoded there instead of on the CPU — worth a lot on 4K HEVC, where decoding is a large share of the
+  work, and useful even when you encode in software. The dropdown lists what your ffmpeg reports
+  (`-hwaccels`). Off by default: the list says what the binary was *built* with, not that this machine has
+  the device. Frames are copied back to system memory after decoding, so this composes with resolution
+  caps and tone-mapping rather than excluding them.
 - **A rules engine** that decides *when* a file should be queued: combinable conditions
   (video codec, resolution, bitrate, HDR/Dolby Vision, audio codec/channels, container, …) with
   AND/OR inside a rule and OR across rules.
@@ -138,10 +144,15 @@ Then open **Dashboard → Plugins → Pre-Transcode**.
 All settings live on the plugin's page (**Dashboard → Plugins → Pre-Transcode**):
 
 - **General** — master enable switch, "queue new items automatically after a scan", max concurrent
-  jobs (default 1), the file-stability window (seconds a file must be untouched before it is
-  eligible, to avoid grabbing active downloads), how many finished jobs to keep (0 = all), and
-  **"Explain every decision in the log"** (see *Why isn't my rule firing?* below). Pausing the queue is
-  remembered across restarts.
+  jobs (default 1), **hardware decoding** (off by default; see below), the file-stability window (seconds
+  a file must be untouched before it is eligible, to avoid grabbing active downloads), how many finished
+  jobs to keep (0 = all), and **"Explain every decision in the log"** (see *Why isn't my rule firing?*
+  below). Pausing the queue is remembered across restarts.
+
+  **Hardware decoding** is a server-wide setting, not a per-profile one: it describes the machine, so the
+  same GPU decodes the source whichever profile encodes it. Try one job before leaving it on — a method
+  your ffmpeg lists but the host cannot open (a cuda-enabled build on a box with no NVIDIA card) makes
+  every job fail, with the ffmpeg error visible on the queue page.
 - **Encoding profiles** — one or more named profiles. Each defines the target video codec + encoder,
   quality (CRF/QP *or* target/max bitrate), preset, resolution policy (unchanged / cap width / cap
   height / cap longest edge / match a preset), audio codec + encoder + bitrate + downmix policy,
@@ -259,6 +270,8 @@ To produce an installable, checksummed zip (and the catalog manifest entry), run
 - [x] Per-container audio negotiation: the same treatment for audio. A track the output container
   cannot store is re-encoded instead of copied, and a profile whose target audio codec the container
   cannot hold falls back to one it can — so "copy audio into mp4" no longer dies on a TrueHD track.
+- [x] Hardware-accelerated decoding (`-hwaccel`), chosen from what the server's ffmpeg reports and
+  independent of the encoder the profile picks.
 - [ ] Future — external subtitle extraction, distributed/off-box encoding.
 
 ## License

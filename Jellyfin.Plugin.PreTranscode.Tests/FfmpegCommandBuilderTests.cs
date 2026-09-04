@@ -627,4 +627,76 @@ public class FfmpegCommandBuilderTests
 
         Assert.Contains("-c:a:0 copy", Build(p, s));
     }
+
+    // ---- hardware decoding ----
+
+    private static List<string> BuildArgs(EncodingProfile p, MediaProbeInfo s, string? hwaccel)
+    {
+        return FfmpegCommandBuilder.BuildArguments(p, s, Presets, "/in.mkv", "/out.mp4", null, hwaccel).ToList();
+    }
+
+    [Fact]
+    public void HardwareDecoder_IsEmittedBeforeTheInputItAppliesTo()
+    {
+        var args = BuildArgs(BaseProfile(), Source(), "cuda");
+        var h = args.IndexOf("-hwaccel");
+        var i = args.IndexOf("-i");
+
+        Assert.True(h >= 0, "the configured hardware decoder must be emitted");
+        Assert.Equal("cuda", args[h + 1]);
+        Assert.True(h < i, "-hwaccel is an input option and must precede -i");
+    }
+
+    // Naming an output format would keep frames in GPU memory, where the scale and tonemap chains this
+    // builder emits cannot read them. The frames are copied back instead, so the two compose.
+    [Fact]
+    public void HardwareDecoder_NeverPinsFramesToGpuMemory()
+    {
+        var p = BaseProfile();
+        p.ResolutionMode = ResolutionMode.CapHeight;
+        p.MaxHeight = 1080;
+        var cmd = string.Join(" ", BuildArgs(p, Source(3840, 2160), "cuda"));
+
+        Assert.Contains("-hwaccel cuda", cmd);
+        Assert.DoesNotContain("-hwaccel_output_format", cmd);
+        Assert.Contains("scale=", cmd);
+    }
+
+    // A copy profile decodes nothing, so initialising a hardware device could only fail.
+    [Fact]
+    public void HardwareDecoder_NotEmittedForACopyVideoProfile()
+    {
+        var p = BaseProfile();
+        p.VideoCodec = "copy";
+
+        Assert.DoesNotContain("-hwaccel", BuildArgs(p, Source(), "cuda"));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void HardwareDecoder_UnsetMeansSoftwareDecoding(string? configured)
+    {
+        Assert.DoesNotContain("-hwaccel", BuildArgs(BaseProfile(), Source(), configured));
+    }
+
+    // The value is an admin-editable config string. It reaches ffmpeg through ArgumentList so it is never
+    // shell-interpreted, but a value carrying a space must not smuggle a second option in either.
+    [Theory]
+    [InlineData("cuda -i /etc/passwd")]
+    [InlineData("cuda;rm -rf /")]
+    [InlineData("../../evil")]
+    public void HardwareDecoder_MalformedValueIsDropped(string configured)
+    {
+        Assert.DoesNotContain("-hwaccel", BuildArgs(BaseProfile(), Source(), configured));
+    }
+
+    [Fact]
+    public void HardwareDecoder_IsNormalisedToLowercase()
+    {
+        var args = BuildArgs(BaseProfile(), Source(), "VideoToolbox");
+
+        Assert.Equal("videotoolbox", args[args.IndexOf("-hwaccel") + 1]);
+    }
 }
