@@ -28,11 +28,6 @@ public class TranscodeJob
     public string SourcePath { get; set; } = string.Empty;
 
     /// <summary>
-    /// Gets or sets the library id this item belongs to (for reference).
-    /// </summary>
-    public string LibraryId { get; set; } = string.Empty;
-
-    /// <summary>
     /// Gets or sets the id of the encoding profile to use (empty = global default).
     /// </summary>
     public string ProfileId { get; set; } = string.Empty;

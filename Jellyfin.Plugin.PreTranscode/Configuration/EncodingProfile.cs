@@ -144,9 +144,20 @@ public class EncodingProfile
 
     /// <summary>
     /// Gets or sets the version label used by <see cref="OutputHandlingMode.AddAsAlternateVersion"/>.
-    /// The output is written next to the source as <c>&lt;original name&gt; - &lt;label&gt;.&lt;ext&gt;</c>,
-    /// which is Jellyfin's native naming convention for alternate versions, so this label is what
-    /// appears in Jellyfin's version selector (e.g. "H.264 1080p").
+    /// The output is written next to the source as <c>&lt;original name&gt; - &lt;label&gt;.&lt;ext&gt;</c>.
+    /// <para>
+    /// Two separate mechanisms can group that file with its source as one item, and which one does the
+    /// work depends on the library. For a <b>movie</b>, the filename above is Jellyfin's own
+    /// multi-version convention and its scanner groups the pair by itself — the label is then what the
+    /// version selector shows (e.g. "H.264 1080p"). For a <b>TV episode</b> the convention does nothing,
+    /// and <c>AlternateVersionMerger</c> adds the database link the dashboard's "Merge Versions" would,
+    /// keeping the source as the primary version so the original file is never renamed.
+    /// </para>
+    /// <para>
+    /// The merger works out which case it is and deliberately does <em>not</em> link a pair Jellyfin has
+    /// already grouped by filename: 10.11 concatenates the two mechanisms without de-duplicating them, so
+    /// doing both listed the same transcode twice in the version picker.
+    /// </para>
     /// </summary>
     public string AlternateVersionLabel { get; set; } = "Pre-Transcode";
 

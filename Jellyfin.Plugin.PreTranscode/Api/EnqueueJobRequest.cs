@@ -24,9 +24,4 @@ public class EnqueueJobRequest
     /// Gets or sets a display name for the queue UI (optional).
     /// </summary>
     public string DisplayName { get; set; } = string.Empty;
-
-    /// <summary>
-    /// Gets or sets the related library id (optional).
-    /// </summary>
-    public string LibraryId { get; set; } = string.Empty;
 }

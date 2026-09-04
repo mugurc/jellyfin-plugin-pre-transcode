@@ -124,16 +124,18 @@ also lets Jellyfin show the plugin's details and offer updates.
 
 ### Option B — manual
 
-Build (see below) and copy the DLL into a subfolder of your Jellyfin **plugins** directory:
+Build (see below) and copy the DLL into a subfolder of your Jellyfin **plugins** directory. Name the
+folder `Pre-Transcode_<version>`, matching the version you built — the examples below use `0.8.0.0`:
 
-- **Windows** (native): `C:\ProgramData\Jellyfin\Server\plugins\Pre-Transcode_0.1.0.0\`
-- **linuxserver.io Docker**: `/config/data/plugins/Pre-Transcode_0.1.0.0/` inside the container.
+- **Windows** (native): `C:\ProgramData\Jellyfin\Server\plugins\Pre-Transcode_0.8.0.0\`
+- **linuxserver.io Docker**: `/config/data/plugins/Pre-Transcode_0.8.0.0/` inside the container.
   Path-agnostic install (works under Runtipi etc.):
 
   ```bash
-  CID=jellyfin  # your container name (docker ps)
-  docker exec "$CID" mkdir -p /config/data/plugins/Pre-Transcode_0.1.0.0
-  docker cp Jellyfin.Plugin.PreTranscode.dll "$CID":/config/data/plugins/Pre-Transcode_0.1.0.0/
+  CID=jellyfin       # your container name (docker ps)
+  VER=0.8.0.0        # the version you built
+  docker exec "$CID" mkdir -p "/config/data/plugins/Pre-Transcode_$VER"
+  docker cp Jellyfin.Plugin.PreTranscode.dll "$CID":"/config/data/plugins/Pre-Transcode_$VER/"
   docker restart "$CID"
   ```
 
@@ -245,7 +247,7 @@ The plugin DLL is produced at
 To produce an installable, checksummed zip (and the catalog manifest entry), run:
 
 ```powershell
-./build-plugin.ps1 -Version 0.1.0.0
+./build-plugin.ps1 -Version 0.8.0.0
 ```
 
 ## Roadmap

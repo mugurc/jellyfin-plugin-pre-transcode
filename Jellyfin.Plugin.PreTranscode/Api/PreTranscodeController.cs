@@ -233,7 +233,6 @@ public class PreTranscodeController : ControllerBase
             ProfileId = request.ProfileId,
             ItemId = request.ItemId,
             DisplayName = string.IsNullOrWhiteSpace(request.DisplayName) ? System.IO.Path.GetFileName(request.SourcePath) : request.DisplayName,
-            LibraryId = request.LibraryId,
             CreatedUtc = DateTime.UtcNow
         };
 
