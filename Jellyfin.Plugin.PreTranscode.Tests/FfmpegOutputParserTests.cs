@@ -210,11 +210,17 @@ public class FfmpegOutputParserTests
         Assert.True(info.FromFfmpeg);
     }
 
-    // Unlike the samples above, this one is NOT captured from a binary — no ffmpeg was available where it
-    // was written. It reproduces the documented shape of "ffmpeg -hwaccels" (a header, then one bare
-    // method name per line), which is all the parser keys on. Worth replacing with real captured output
-    // the next time this is touched on a machine that has ffmpeg.
+    // Captured verbatim from "ffmpeg -hide_banner -hwaccels" on ffmpeg 9.0.1 (macOS/arm64), which offers
+    // exactly one method. RealFfmpegIntegrationTests re-checks the parser against whatever binary the
+    // machine running the tests actually has.
     private const string HwaccelsOutput = """
+        Hardware acceleration methods:
+        videotoolbox
+        """;
+
+    // Constructed, not captured: a build with several methods, to cover the multi-line case the sample
+    // above cannot. The shape (header, then one bare name per line) is the part the parser keys on.
+    private const string HwaccelsOutputMany = """
         Hardware acceleration methods:
         vdpau
         cuda
@@ -226,9 +232,15 @@ public class FfmpegOutputParserTests
         """;
 
     [Fact]
+    public void ParseHardwareAccelerators_ReadsTheRealBinarysSingleMethod()
+    {
+        Assert.Equal(new[] { "videotoolbox" }, FfmpegOutputParser.ParseHardwareAccelerators(HwaccelsOutput));
+    }
+
+    [Fact]
     public void ParseHardwareAccelerators_ReadsEveryMethod()
     {
-        var methods = FfmpegOutputParser.ParseHardwareAccelerators(HwaccelsOutput);
+        var methods = FfmpegOutputParser.ParseHardwareAccelerators(HwaccelsOutputMany);
 
         Assert.Equal(new[] { "vdpau", "cuda", "vaapi", "qsv", "drm", "opencl", "vulkan" }, methods);
     }

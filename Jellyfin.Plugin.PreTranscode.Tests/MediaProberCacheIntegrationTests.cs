@@ -17,47 +17,11 @@ namespace Jellyfin.Plugin.PreTranscode.Tests;
 [Trait("Category", "Integration")]
 public class MediaProberCacheIntegrationTests
 {
-    private static string? Find(string name)
-    {
-        var candidates = new[]
-        {
-            @"C:\Program Files\Jellyfin\Server\" + name + ".exe",
-            "/usr/lib/jellyfin-ffmpeg/" + name,
-            "/usr/bin/" + name
-        };
-        foreach (var c in candidates)
-        {
-            if (File.Exists(c))
-            {
-                return c;
-            }
-        }
-
-        var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-        var exe = OperatingSystem.IsWindows() ? name + ".exe" : name;
-        foreach (var dir in path.Split(Path.PathSeparator))
-        {
-            try
-            {
-                var full = Path.Combine(dir.Trim(), exe);
-                if (File.Exists(full))
-                {
-                    return full;
-                }
-            }
-            catch (ArgumentException)
-            {
-            }
-        }
-
-        return null;
-    }
-
     [Fact]
     public async Task UnchangedFile_IsServedFromCache_ChangedFile_IsReprobed()
     {
-        var ffmpeg = Find("ffmpeg");
-        var ffprobe = Find("ffprobe");
+        var ffmpeg = FfmpegTestBinaries.Find("ffmpeg");
+        var ffprobe = FfmpegTestBinaries.Find("ffprobe");
         if (ffmpeg is null || ffprobe is null)
         {
             return; // no local ffmpeg — skip

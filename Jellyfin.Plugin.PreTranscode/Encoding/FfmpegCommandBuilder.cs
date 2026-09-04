@@ -303,12 +303,15 @@ internal static class FfmpegCommandBuilder
     /// only thing initialising a hardware device could do is fail.
     /// </para>
     /// <para>
-    /// Deliberately without <c>-hwaccel_output_format</c>. Naming an output format keeps the decoded
-    /// frames in GPU memory, which is faster still — and which every filter this builder emits then
-    /// refuses to touch: the scale and tonemap chains are software filters and cannot read a hardware
-    /// frame. Leaving it off makes ffmpeg copy frames back to system memory after decoding, so hardware
-    /// decoding composes with resolution caps and tone-mapping instead of being mutually exclusive with
-    /// them. The copy costs some of the win; a broken filter chain would cost all of it.
+    /// Deliberately without <c>-hwaccel_output_format</c>. Naming an output format keeps decoded frames
+    /// in GPU memory, which is faster again, but every filter this builder emits — the scale and tonemap
+    /// chains — is a software filter that cannot read a hardware frame. Recent ffmpeg papers over that by
+    /// inserting <c>hwdownload</c> into the graph itself: measured working on ffmpeg 9.0.1, videotoolbox
+    /// plus a scale filter, output correct. That is version-dependent behaviour though, and the plugin
+    /// runs against whatever binary the server happens to have. Leaving the option off asks for frames in
+    /// system memory outright, so hardware decoding composes with resolution caps and tone-mapping on
+    /// every version rather than on new ones. The copy back costs some of the win; depending on a filter
+    /// ffmpeg may or may not insert for you could cost all of it.
     /// </para>
     /// <para>
     /// The value reaches ffmpeg through ArgumentList, so it is never shell-interpreted, but it is still

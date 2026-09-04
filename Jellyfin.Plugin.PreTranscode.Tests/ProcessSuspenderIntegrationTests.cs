@@ -13,48 +13,12 @@ namespace Jellyfin.Plugin.PreTranscode.Tests;
 [Trait("Category", "Integration")]
 public class ProcessSuspenderIntegrationTests
 {
-    private static string? FindFfmpeg()
-    {
-        var candidates = new[]
-        {
-            @"C:\Program Files\Jellyfin\Server\ffmpeg.exe",
-            "/usr/lib/jellyfin-ffmpeg/ffmpeg",
-            "/usr/bin/ffmpeg"
-        };
-        foreach (var c in candidates)
-        {
-            if (File.Exists(c))
-            {
-                return c;
-            }
-        }
-
-        var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-        var exe = OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg";
-        foreach (var dir in path.Split(Path.PathSeparator))
-        {
-            try
-            {
-                var full = Path.Combine(dir.Trim(), exe);
-                if (File.Exists(full))
-                {
-                    return full;
-                }
-            }
-            catch (ArgumentException)
-            {
-            }
-        }
-
-        return null;
-    }
-
     private static long Size(string path) => File.Exists(path) ? new FileInfo(path).Length : 0;
 
     [Fact]
     public async Task Suspend_FreezesEncode_Resume_Continues()
     {
-        var ffmpeg = FindFfmpeg();
+        var ffmpeg = FfmpegTestBinaries.Find("ffmpeg");
         if (ffmpeg is null)
         {
             return; // no ffmpeg available — skip
