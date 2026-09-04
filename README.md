@@ -103,10 +103,13 @@ they are probably still the better choice. Pre-Transcode is deliberately narrowe
 | Best for | "I just want my Jellyfin files pre-made compatible, configured in one place" | Large libraries, distributed encoding, complex flows | Home users wanting a standalone watcher |
 
 **Honest tradeoffs:** Pre-Transcode runs inside the Jellyfin server process, so a heavy encode
-competes with your server for CPU (mitigated by a default concurrency of 1 and off-peak scheduling).
-It has no distributed encoding and a smaller feature surface than Tdarr. If you already run
-Tdarr/Unmanic happily, you don't need this. Its value is being **Jellyfin-native**: no extra
-containers, library-aware rules, and everything configured from the Jellyfin dashboard.
+competes with your server for CPU. A default concurrency of 1 holds that to one encode at a time,
+and the queue can be paused and resumed — but there is **no time-of-day window**: work starts as
+soon as it is queued. To keep encoding off peak hours, leave "queue new items automatically" off
+and schedule the **Pre-Transcode: sweep library** task for a quiet hour, so the work is queued (and
+so starts) then. It also has no distributed encoding and a smaller feature surface than Tdarr. If
+you already run Tdarr/Unmanic happily, you don't need this. Its value is being **Jellyfin-native**:
+no extra containers, library-aware rules, and everything configured from the Jellyfin dashboard.
 
 ## Requirements
 
@@ -238,7 +241,7 @@ Requires the **.NET 9 SDK**.
 
 ```bash
 dotnet build --configuration Release
-dotnet test   --configuration Release   # 284 unit + integration tests
+dotnet test   --configuration Release   # unit + integration tests
 ```
 
 The plugin DLL is produced at
