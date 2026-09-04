@@ -210,7 +210,10 @@ public class FfmpegOutputParserTests
         Assert.True(info.FromFfmpeg);
     }
 
-    // Real "ffmpeg -hwaccels" output from a jellyfin-ffmpeg build.
+    // Unlike the samples above, this one is NOT captured from a binary — no ffmpeg was available where it
+    // was written. It reproduces the documented shape of "ffmpeg -hwaccels" (a header, then one bare
+    // method name per line), which is all the parser keys on. Worth replacing with real captured output
+    // the next time this is touched on a machine that has ffmpeg.
     private const string HwaccelsOutput = """
         Hardware acceleration methods:
         vdpau
