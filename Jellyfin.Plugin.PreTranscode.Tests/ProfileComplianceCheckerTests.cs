@@ -203,4 +203,47 @@ public class ProfileComplianceCheckerTests
 
         Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(p, info, Presets));
     }
+
+    // The builder substitutes a codec the container can hold when the profile asks for one it cannot
+    // (aac into webm). Compliance has to compare the source against that SUBSTITUTED codec: judging it
+    // against the configured "aac" would find the encoder's own opus output non-compliant on every
+    // sweep, re-encode it, and queue it again forever.
+    [Fact]
+    public void AacProfileInWebm_OpusSource_IsCompliant_NotReEncodedForever()
+    {
+        var p = Profile();
+        p.VideoCodec = "vp9";
+        p.AudioCodec = "aac";
+        p.Container = "webm";
+
+        var info = Info(vc: "vp9", ac: "opus", container: "matroska,webm");
+        info.AudioStreams = new[] { new AudioStreamInfo { Codec = "opus", Channels = 2 } };
+
+        Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(p, info, Presets));
+    }
+
+    [Fact]
+    public void AacProfileInWebm_AacSource_StillNeedsWork()
+    {
+        var p = Profile();
+        p.VideoCodec = "vp9";
+        p.AudioCodec = "aac";
+        p.Container = "webm";
+
+        var info = Info(vc: "vp9", ac: "aac", container: "matroska,webm");
+        info.AudioStreams = new[] { new AudioStreamInfo { Codec = "aac", Channels = 2 } };
+
+        Assert.True(ProfileComplianceChecker.NeedsWork(p, info, Presets, out var reason));
+        Assert.Equal("audio codec differs", reason);
+    }
+
+    // The mp4 case is unchanged: no substitution happens, so the configured codec is still the one compared.
+    [Fact]
+    public void AacProfileInMp4_AacSource_IsStillCompliant()
+    {
+        var info = Info();
+        info.AudioStreams = new[] { new AudioStreamInfo { Codec = "aac", Channels = 2 } };
+
+        Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(Profile(), info, Presets));
+    }
 }

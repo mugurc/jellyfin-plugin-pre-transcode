@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Jellyfin.Plugin.PreTranscode.Configuration;
+using Jellyfin.Plugin.PreTranscode.Encoding;
 using Jellyfin.Plugin.PreTranscode.Media;
 
 namespace Jellyfin.Plugin.PreTranscode.Rules;
@@ -105,17 +106,25 @@ internal static class ProfileComplianceChecker
     // The encoder converts every audio track, so the file is only compliant when *every* track already
     // matches the target codec; considering only the first track would skip a file whose other-language
     // tracks still force live transcoding — the exact thing pre-transcoding exists to prevent.
+    //
+    // Compared against the codec the builder will REALLY produce, not the profile's configured one. The
+    // two differ when the target container cannot store the configured codec (aac into webm), and the
+    // builder substitutes one it can. Comparing against the configured codec there would find the
+    // encoder's own output non-compliant forever: every sweep would re-encode the file, produce the
+    // substituted codec again, and queue it again on the next pass.
     private static bool AudioCodecNeedsWork(EncodingProfile profile, MediaProbeInfo info)
     {
+        var target = AudioContainerPolicy.EffectiveCodec(profile);
+
         if (info.AudioStreams.Count > 0)
         {
-            return info.AudioStreams.Any(s => !Same(s.Codec, profile.AudioCodec));
+            return info.AudioStreams.Any(s => !Same(s.Codec, target));
         }
 
         // A source with no audio at all is already compliant on this dimension: the encoder cannot add a
         // track, so re-transcoding would never make the (absent) audio codec match — flagging it forever
         // and re-transcoding a silent file on every sweep. Only a KNOWN codec that differs is work.
-        return !string.IsNullOrEmpty(info.AudioCodec) && !Same(info.AudioCodec, profile.AudioCodec);
+        return !string.IsNullOrEmpty(info.AudioCodec) && !Same(info.AudioCodec, target);
     }
 
     private static bool ExceedsChannels(EncodingProfile profile, MediaProbeInfo info)

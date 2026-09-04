@@ -61,11 +61,14 @@ to live-transcode that file again.
 - **Safety first.** Each encode is written to a temp file and **verified** (non-empty,
   ffprobe-parseable, duration within tolerance) before any output policy is applied. The default
   policy never modifies your originals. Files still being written (active downloads) are skipped.
-- **Keeps every track.** All audio tracks (every language) are carried across — a track already in
-  the target codec is copied verbatim (no quality loss), the rest are re-encoded, and each is downmixed
-  only if it individually exceeds the channel cap. For a **Matroska (mkv)** output, all subtitle tracks
-  and embedded fonts (for ASS/SSA) are copied losslessly too. *(MP4/MOV can only hold `mov_text`, so
-  choose an mkv container in your profile if you want subtitles preserved.)*
+- **Keeps every track.** All audio tracks (every language) are carried across — a track already in the
+  target codec is copied verbatim (no quality loss) **when the output container can store it**, the rest
+  are re-encoded, and each is downmixed only if it individually exceeds the channel cap. A codec the
+  container has no tag for (TrueHD into mp4; anything but Opus/Vorbis into webm) is re-encoded rather than
+  copied, because a muxer handed one rejects the output header and fails the whole job. For a **Matroska
+  (mkv)** output, all subtitle tracks and embedded fonts (for ASS/SSA) are copied losslessly too.
+  *(MP4/MOV can only hold `mov_text`, so choose an mkv container in your profile if you want subtitles
+  preserved.)*
 - **Idempotent.** Files already compliant with the target profile are detected and skipped cheaply.
   That check compares codec, container, resolution, audio and HDR — **not** file size or bitrate — so a
   profile built to *shrink* material that already carries the target codec should switch off
@@ -222,7 +225,7 @@ Requires the **.NET 9 SDK**.
 
 ```bash
 dotnet build --configuration Release
-dotnet test   --configuration Release   # 52 unit + integration tests
+dotnet test   --configuration Release   # 284 unit + integration tests
 ```
 
 The plugin DLL is produced at
@@ -253,6 +256,9 @@ To produce an installable, checksummed zip (and the catalog manifest entry), run
 - [x] Per-container subtitle negotiation: tracks the output container can store are copied verbatim,
   the rest converted (an mp4 source's `mov_text` → srt), so mp4 sources transcode to Matroska
   successfully and keep their subtitles.
+- [x] Per-container audio negotiation: the same treatment for audio. A track the output container
+  cannot store is re-encoded instead of copied, and a profile whose target audio codec the container
+  cannot hold falls back to one it can — so "copy audio into mp4" no longer dies on a TrueHD track.
 - [ ] Future — external subtitle extraction, distributed/off-box encoding.
 
 ## License

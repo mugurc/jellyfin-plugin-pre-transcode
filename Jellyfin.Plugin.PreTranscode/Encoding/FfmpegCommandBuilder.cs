@@ -155,8 +155,7 @@ internal static class FfmpegCommandBuilder
         // ---- audio ----
         if (IsCopy(profile.AudioCodec))
         {
-            args.Add("-c:a");
-            args.Add("copy");
+            AddCopyAudio(args, profile, source);
         }
         else if (source.AudioStreams.Count > 0)
         {
@@ -167,7 +166,7 @@ internal static class FfmpegCommandBuilder
             // Fallback when the probe did not enumerate per-stream info: apply the target codec to
             // every audio track at once (mapped via 0:a?), downmixing from the first stream's layout.
             args.Add("-c:a");
-            args.Add(profile.AudioEncoder);
+            args.Add(AudioContainerPolicy.EffectiveEncoder(profile));
             args.Add("-b:a");
             args.Add(N(profile.AudioBitrateKbps) + "k");
 
@@ -285,6 +284,49 @@ internal static class FfmpegCommandBuilder
         return sb.ToString();
     }
 
+    // A "copy" audio profile, honoured as far as the output container allows. Copy still means copy for
+    // every track the container can store — which is all of them for Matroska, and the common case for
+    // mp4 — and the wholesale "-c:a copy" is kept whenever that holds, so the emitted command is
+    // unchanged for those profiles. Only when some track cannot be stored does this drop to per-track
+    // specifiers and re-encode that one track, because the alternative is not "copy" but a muxer that
+    // rejects the header and fails the entire job (an mkv source's TrueHD into mp4; an aac track into
+    // webm).
+    //
+    // The channel cap is deliberately NOT applied to the tracks this is forced to re-encode. The admin
+    // asked for copy, so the output should differ from the source only as far as the container compels;
+    // silently downmixing 7.1 to stereo is a second, larger change nobody requested — and it would also
+    // disagree with ProfileComplianceChecker, which ignores the channel cap on copy profiles.
+    private static void AddCopyAudio(List<string> args, EncodingProfile profile, MediaProbeInfo source)
+    {
+        var storable = source.AudioStreams.Count == 0
+            || source.AudioStreams.All(s => AudioContainerPolicy.CanStore(profile.Container, s.Codec));
+
+        if (storable)
+        {
+            // Either the probe reported no per-stream detail (so there is nothing to select from, and a
+            // blanket copy is the only answer available) or every track fits as it is.
+            args.Add("-c:a");
+            args.Add("copy");
+            return;
+        }
+
+        var fallback = AudioContainerPolicy.FallbackEncoder(profile.Container);
+        for (var i = 0; i < source.AudioStreams.Count; i++)
+        {
+            var idx = N(i);
+            args.Add("-c:a:" + idx);
+            if (AudioContainerPolicy.CanStore(profile.Container, source.AudioStreams[i].Codec))
+            {
+                args.Add("copy");
+                continue;
+            }
+
+            args.Add(fallback);
+            args.Add("-b:a:" + idx);
+            args.Add(N(profile.AudioBitrateKbps) + "k");
+        }
+    }
+
     // Preserves every audio track (all languages). A track already in the target codec and within the
     // channel cap is copied verbatim (no quality loss); the rest are re-encoded, each downmixed only if
     // it individually exceeds the cap. Per-stream specifiers (:a:i) refer to the i-th mapped audio track.
@@ -292,16 +334,23 @@ internal static class FfmpegCommandBuilder
     // "-ac:i" is an output-stream-index specifier (stream 0 is the video, mapped first), so ffmpeg
     // silently ignores it and the downmix never happens — verified with real ffmpeg: "-ac:0 2" leaves a
     // 5.1 track at 6 channels, while "-ac:a:0 2" correctly yields stereo.
+    //
+    // The target is the codec the container can actually hold, which is the profile's own unless the two
+    // are incompatible (aac into webm). Copying is then decided against that effective target, so a
+    // source track is never copied into a container with no tag for it.
     private static void AddPerTrackAudio(List<string> args, EncodingProfile profile, MediaProbeInfo source)
     {
         var cap = ChannelCap(profile);
+        var targetCodec = AudioContainerPolicy.EffectiveCodec(profile);
+        var targetEncoder = AudioContainerPolicy.EffectiveEncoder(profile);
+
         for (var i = 0; i < source.AudioStreams.Count; i++)
         {
             var stream = source.AudioStreams[i];
             var idx = N(i);
             var withinCap = !cap.HasValue || stream.Channels <= cap.Value;
 
-            if (Same(stream.Codec, profile.AudioCodec) && withinCap)
+            if (Same(stream.Codec, targetCodec) && withinCap)
             {
                 args.Add("-c:a:" + idx);
                 args.Add("copy");
@@ -309,7 +358,7 @@ internal static class FfmpegCommandBuilder
             }
 
             args.Add("-c:a:" + idx);
-            args.Add(profile.AudioEncoder);
+            args.Add(targetEncoder);
             args.Add("-b:a:" + idx);
             args.Add(N(profile.AudioBitrateKbps) + "k");
             if (cap.HasValue && stream.Channels > cap.Value)

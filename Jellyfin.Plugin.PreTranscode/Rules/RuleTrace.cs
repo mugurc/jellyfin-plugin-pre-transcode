@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using Jellyfin.Plugin.PreTranscode.Configuration;
 using Jellyfin.Plugin.PreTranscode.Media;
+using AudioContainerPolicy = Jellyfin.Plugin.PreTranscode.Encoding.AudioContainerPolicy;
 
 namespace Jellyfin.Plugin.PreTranscode.Rules;
 
@@ -134,6 +135,21 @@ internal static class RuleTrace
         var needsWork = ProfileComplianceChecker.NeedsWork(profile, info, presets, out var reason);
         return string.Create(
             CultureInfo.InvariantCulture,
-            $"profile '{profile.Name}' (video={profile.VideoCodec}, audio={profile.AudioCodec}, container={profile.Container}): {(needsWork ? "would change '" + reason + "'" : "source already matches every dimension this profile compares")}");
+            $"profile '{profile.Name}' (video={profile.VideoCodec}, audio={DescribeAudioTarget(profile)}, container={profile.Container}): {(needsWork ? "would change '" + reason + "'" : "source already matches every dimension this profile compares")}");
+    }
+
+    // The profile's audio codec, and — when the container cannot store it — what it is actually
+    // substituted with. That substitution is otherwise invisible: nothing else in the log explains why a
+    // profile configured for aac produced opus, and this line is the admin's only window into it.
+    private static string DescribeAudioTarget(EncodingProfile profile)
+    {
+        if (AudioContainerPolicy.KeepsProfileTarget(profile))
+        {
+            return profile.AudioCodec;
+        }
+
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"{profile.AudioCodec} -> {AudioContainerPolicy.EffectiveCodec(profile)} ({profile.Container} cannot store {profile.AudioCodec})");
     }
 }

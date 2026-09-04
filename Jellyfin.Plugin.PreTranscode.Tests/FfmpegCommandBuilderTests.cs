@@ -24,6 +24,15 @@ public class FfmpegCommandBuilderTests
         };
     }
 
+    private static EncodingProfile WebmProfile()
+    {
+        var p = BaseProfile();
+        p.VideoCodec = "vp9";
+        p.VideoEncoder = "libvpx-vp9";
+        p.Container = "webm";
+        return p;
+    }
+
     private static MediaProbeInfo Source(int w = 1920, int h = 1080, int ch = 2, bool hdr = false)
     {
         return new MediaProbeInfo { VideoCodec = "hevc", Width = w, Height = h, AudioChannels = ch, IsHdr = hdr };
@@ -487,5 +496,135 @@ public class FfmpegCommandBuilderTests
         Assert.Contains("-bsf:v", args, StringComparer.Ordinal);
         Assert.DoesNotContain("-vf", args, StringComparer.Ordinal);
         Assert.DoesNotContain("hqdn3d", args, StringComparer.Ordinal);
+    }
+
+    // ---- audio / container negotiation ----
+    //
+    // The counterpart of the subtitle negotiation. A muxer handed an audio codec it has no tag for
+    // rejects the output header and the whole job dies in seconds, so a track the container cannot store
+    // is re-encoded rather than copied.
+
+    [Fact]
+    public void CopyAudio_Mp4_ReEncodesOnlyTheTrackTheContainerCannotStore()
+    {
+        var p = BaseProfile();
+        p.AudioCodec = "copy";
+        var s = Source();
+        s.AudioStreams = new[]
+        {
+            new AudioStreamInfo { Codec = "truehd", Channels = 8 }, // mp4 has no tag for TrueHD
+            new AudioStreamInfo { Codec = "ac3", Channels = 6 },    // mp4 stores ac-3 fine
+        };
+        var cmd = Build(p, s);
+
+        Assert.Contains("-c:a:0 aac", cmd);
+        Assert.Contains("-b:a:0 256k", cmd);
+        Assert.Contains("-c:a:1 copy", cmd);
+        Assert.DoesNotContain("-c:a copy", cmd);
+    }
+
+    // "Copy" is honoured as far as the container allows and no further: a track that must be re-encoded
+    // is not also downmixed, because that is a second change the admin never asked for.
+    [Fact]
+    public void CopyAudio_ForcedReEncode_DoesNotAlsoDownmix()
+    {
+        var p = BaseProfile();
+        p.AudioCodec = "copy";
+        p.ChannelPolicy = AudioChannelPolicy.CapStereo;
+        var s = Source();
+        s.AudioStreams = new[] { new AudioStreamInfo { Codec = "truehd", Channels = 8 } };
+        var cmd = Build(p, s);
+
+        Assert.Contains("-c:a:0 aac", cmd);
+        Assert.DoesNotContain("-ac:a:0", cmd);
+    }
+
+    [Fact]
+    public void CopyAudio_Matroska_StillWholesaleCopy_ForEveryCodec()
+    {
+        var p = BaseProfile();
+        p.AudioCodec = "copy";
+        p.Container = "mkv";
+        var s = Source();
+        s.AudioStreams = new[]
+        {
+            new AudioStreamInfo { Codec = "truehd", Channels = 8 },
+            new AudioStreamInfo { Codec = "dts", Channels = 6 },
+        };
+        var cmd = Build(p, s);
+
+        Assert.Contains("-c:a copy", cmd);
+        Assert.DoesNotContain("-c:a:0", cmd);
+    }
+
+    [Fact]
+    public void CopyAudio_Webm_ReEncodesAacToLibopus()
+    {
+        var p = WebmProfile();
+        p.AudioCodec = "copy";
+        var s = Source();
+        s.AudioStreams = new[] { new AudioStreamInfo { Codec = "aac", Channels = 2 } };
+        var cmd = Build(p, s);
+
+        Assert.Contains("-c:a:0 libopus", cmd);
+        Assert.DoesNotContain("-c:a copy", cmd);
+    }
+
+    // The profile's own target can be the unstorable one. Copying the source's aac track into webm
+    // because it "matches the profile" is exactly the failure this closes.
+    [Fact]
+    public void AacTarget_Webm_SubstitutesOpus_AndNeverCopiesTheAacTrack()
+    {
+        var p = WebmProfile();
+        var s = Source();
+        s.AudioStreams = new[]
+        {
+            new AudioStreamInfo { Codec = "aac", Channels = 2 },
+            new AudioStreamInfo { Codec = "ac3", Channels = 6 },
+        };
+        var cmd = Build(p, s);
+
+        Assert.Contains("-c:a:0 libopus", cmd);
+        Assert.Contains("-c:a:1 libopus", cmd);
+        Assert.DoesNotContain("copy", cmd);
+        Assert.DoesNotContain(" aac", cmd);
+    }
+
+    [Fact]
+    public void AacTarget_Webm_NoPerStreamInfo_StillSubstitutesOpus()
+    {
+        var cmd = Build(WebmProfile(), Source());
+
+        Assert.Contains("-c:a libopus", cmd);
+        Assert.DoesNotContain("-c:a aac", cmd);
+    }
+
+    // Regression guard: the ordinary mp4 case must emit exactly what it always did.
+    [Fact]
+    public void AacTarget_Mp4_AacTrackIsStillCopiedVerbatim()
+    {
+        var p = BaseProfile();
+        var s = Source();
+        s.AudioStreams = new[]
+        {
+            new AudioStreamInfo { Codec = "aac", Channels = 2 },
+            new AudioStreamInfo { Codec = "truehd", Channels = 8 },
+        };
+        var cmd = Build(p, s);
+
+        Assert.Contains("-c:a:0 copy", cmd);
+        Assert.Contains("-c:a:1 aac", cmd);
+    }
+
+    [Fact]
+    public void OpusTarget_Webm_OpusTrackIsCopied()
+    {
+        var p = WebmProfile();
+        p.AudioCodec = "opus";
+        p.AudioEncoder = "libopus";
+        var s = Source();
+        s.AudioStreams = new[] { new AudioStreamInfo { Codec = "opus", Channels = 2 } };
+
+        Assert.Contains("-c:a:0 copy", Build(p, s));
     }
 }
