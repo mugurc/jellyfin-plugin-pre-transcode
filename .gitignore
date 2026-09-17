@@ -3,3 +3,6 @@ obj/
 .vs/
 .idea/
 artifacts
+.DS_Store
+Thumbs.db
+*.user

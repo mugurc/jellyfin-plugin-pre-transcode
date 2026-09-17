@@ -297,6 +297,23 @@ To produce an installable, checksummed zip (and the catalog manifest entry), run
   its full path, so a show name, an `S03E06` or a release tag finds the file.
 - [ ] Future — external subtitle extraction, distributed/off-box encoding.
 
+## Contributing
+
+Contributions are welcome — bug reports, reproductions, docs and code. Start with
+[CONTRIBUTING.md](CONTRIBUTING.md): it covers the development setup, the analyzer rules (warnings are
+errors), what makes a test worth keeping, and how to verify a change against a throwaway Jellyfin
+instance.
+
+- **Found a defect?** [Open a bug report](https://github.com/mugurc/jellyfin-plugin-pre-transcode/issues/new?template=bug_report.yml)
+  — with *"Explain every decision in the log"* turned on, a log excerpt usually identifies the cause
+  immediately.
+- **Want a capability?** [Open a feature request](https://github.com/mugurc/jellyfin-plugin-pre-transcode/issues/new?template=feature_request.yml).
+  Both features in 0.10.0.0 started as one.
+- **Question or setup advice?** Use [Discussions](https://github.com/mugurc/jellyfin-plugin-pre-transcode/discussions).
+- **Security issue?** See [SECURITY.md](SECURITY.md) — report it privately, not as an issue.
+
+Everyone taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## License
 
 [GPLv3](LICENSE). This plugin links against Jellyfin's GPLv3 packages and is therefore

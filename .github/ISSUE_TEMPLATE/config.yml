@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question, help or "is this the right setup?"
+    url: https://github.com/mugurc/jellyfin-plugin-pre-transcode/discussions
+    about: Support questions and setup advice belong in Discussions. Issues filed as questions are moved there.
+  - name: A rule is not firing / nothing gets queued
+    url: https://github.com/mugurc/jellyfin-plugin-pre-transcode#why-isnt-my-rule-firing
+    about: Turn on "Explain every decision in the log" and read the trace first — it names the condition that failed and the value it was compared against.
+  - name: Security vulnerability
+    url: https://github.com/mugurc/jellyfin-plugin-pre-transcode/security/advisories/new
+    about: Report privately instead of opening a public issue.

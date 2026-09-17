@@ -1,0 +1,129 @@
+name: Bug report
+description: Something the plugin does is wrong, fails, or contradicts what the README says.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. Two things make a report actionable more than
+        anything else: the **exact versions**, and a **log excerpt**.
+
+        Before filing, please check the [README](https://github.com/mugurc/jellyfin-plugin-pre-transcode#readme)
+        — in particular *Why isn't my rule firing?*, which explains the two traps behind most
+        "nothing gets queued" reports.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched the existing issues (open **and** closed) and this is not a duplicate.
+          required: true
+        - label: I am on the latest plugin release, or I have stated below which older version I am on and why.
+          required: true
+        - label: This is a defect, not a support question or a feature request.
+          required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: Dashboard → Plugins → Pre-Transcode, or the folder name (`Pre-Transcode_0.10.0.0`).
+      placeholder: "0.10.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: jellyfin-version
+    attributes:
+      label: Jellyfin server version
+      description: Dashboard → the version shown under the server name.
+      placeholder: "10.11.11"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How the server is installed
+      options:
+        - Docker (official jellyfin/jellyfin)
+        - Docker (linuxserver.io)
+        - Docker (other / Unraid / Runtipi / TrueNAS)
+        - Linux (native package)
+        - Windows (native)
+        - macOS (Jellyfin.app)
+        - Other / unsure
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Host OS and CPU/GPU
+      description: Relevant when the report involves hardware encoding or decoding.
+      placeholder: "Ubuntu 24.04, Ryzen 5600G, no discrete GPU"
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you observed, in one or two sentences. Include the exact error text if there is one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered, from a known starting point. Say whether it happens every time or intermittently.
+      placeholder: |
+        1. Profile: H.264 / AAC / MP4, output policy "Separate directory"
+        2. Rule: Video codec Equals hevc
+        3. Queue one item from "Transcode a single item"
+        4. The job fails within a second with ...
+
+        Happens every time, on any file.
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: |
+        The profile settings and the trigger rules involved (codec, container, resolution policy,
+        audio policy, output handling), plus anything non-default in *General* — max concurrent jobs,
+        hardware decoding, the processing schedule.
+      placeholder: |
+        Profile: HEVC / libx265 / CRF 24 / mkv / Replace in place, "Skip if already compliant" on
+        Rule: Container Equals mp4 AND VideoDurationMinutes GreaterThan 30
+        General: max concurrent 2, hardware decoding off, processing schedule 22:00–06:00
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log excerpt
+      description: |
+        Turn on **"Explain every decision in the log"** (plugin settings → General), reproduce, then
+        copy the `Pre-Transcode` lines from Dashboard → Logs. Include the full ffmpeg command line and
+        error if a job failed. Redact paths you consider private, but keep file extensions.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots of the page, `ffprobe` output for a problem file, when it started happening, what you already tried.

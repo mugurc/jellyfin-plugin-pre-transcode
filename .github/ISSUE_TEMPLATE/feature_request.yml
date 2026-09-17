@@ -1,0 +1,71 @@
+name: Feature request
+description: Suggest a capability the plugin does not have.
+title: "[Feature Request] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests are welcome — several shipped features started as one. The most useful ones
+        describe **the problem in your daily use**, not only the solution: the problem is what gets
+        designed against, and there is often a simpler answer than the one that comes to mind first.
+
+        Please check [What is in and out of scope](https://github.com/mugurc/jellyfin-plugin-pre-transcode/blob/main/CONTRIBUTING.md#what-is-in-and-out-of-scope)
+        and the [Roadmap](https://github.com/mugurc/jellyfin-plugin-pre-transcode#roadmap) first.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched the existing issues (open **and** closed) and this is not a duplicate.
+          required: true
+        - label: This is not already possible with the current settings, as far as I can tell.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What happens today that you want to stop happening, and when does it bite you?
+      placeholder: |
+        Something downloads at 19:00 while I'm using the PC and encoding starts immediately, so I have
+        to open the plugin page and hit Pause by hand every time.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+      description: |
+        The behaviour you want. If it needs a setting, say where you would expect to find it and what
+        the options should be — being concrete here makes it much more likely to be built as you meant.
+      placeholder: |
+        A "start processing at" / "pause processing at" pair on the settings page, dropdowns in 30-minute
+        steps. Nothing per-weekday. Items should keep queueing outside the window and drain inside it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds you have tried
+      description: What you do today instead, and why it is not good enough. Prior art in Tdarr/Unmanic/other tools is useful context.
+
+  - type: dropdown
+    id: scale
+    attributes:
+      label: How much does this affect you?
+      options:
+        - Nice to have
+        - Would noticeably improve my daily use
+        - I cannot use the plugin the way I want without it
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Library size, media types, hardware, mock-ups — whatever makes the use case concrete.
