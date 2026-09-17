@@ -64,6 +64,15 @@ to live-transcode that file again.
 - **Per-library overrides** — Movies, TV and Home Videos can each use a different profile and rules.
 - **A persistent job queue** that survives restarts, deduplicates, and supports cancel / requeue /
   pause from a live status page with progress bars.
+- **A daily processing window.** Set "start processing at" and "pause processing at" in 30-minute steps
+  (server local time, over-midnight windows like 22:00–06:00 included). Outside the window nothing new is
+  claimed and a running encode is **frozen where it is** at the OS level — no CPU, no lost progress — so a
+  file that arrives at 19:00 waits in the queue instead of encoding while you are watching. Items keep
+  being evaluated and queued throughout; the control center says which window is holding them, and
+  *Resume queue* is an explicit "run now" that lasts until the window's next edge.
+- **Queue one item by name *or* file name.** The single-item search matches every word you type against
+  both the item's label and its full path, so a show name, an `S03E06`, a `1080p` or a release-group tag
+  finds the file — including a series name that appears in no episode title.
 - **Safety first.** Each encode is written to a temp file and **verified** (non-empty,
   ffprobe-parseable, duration within tolerance) before any output policy is applied. The default
   policy never modifies your originals. Files still being written (active downloads) are skipped.
@@ -104,10 +113,8 @@ they are probably still the better choice. Pre-Transcode is deliberately narrowe
 
 **Honest tradeoffs:** Pre-Transcode runs inside the Jellyfin server process, so a heavy encode
 competes with your server for CPU. A default concurrency of 1 holds that to one encode at a time,
-and the queue can be paused and resumed — but there is **no time-of-day window**: work starts as
-soon as it is queued. To keep encoding off peak hours, leave "queue new items automatically" off
-and schedule the **Pre-Transcode: sweep library** task for a quiet hour, so the work is queued (and
-so starts) then. It also has no distributed encoding and a smaller feature surface than Tdarr. If
+the queue can be paused and resumed, and a **daily processing window** keeps the work off the hours
+you actually use the machine. It has no distributed encoding and a smaller feature surface than Tdarr. If
 you already run Tdarr/Unmanic happily, you don't need this. Its value is being **Jellyfin-native**:
 no extra containers, library-aware rules, and everything configured from the Jellyfin dashboard.
 
@@ -158,6 +165,12 @@ All settings live on the plugin's page (**Dashboard → Plugins → Pre-Transcod
   same GPU decodes the source whichever profile encodes it. Try one job before leaving it on — a method
   your ffmpeg lists but the host cannot open (a cuda-enabled build on a box with no NVIDIA card) makes
   every job fail, with the ffmpeg error visible on the queue page.
+- **Processing schedule** — optionally confine transcoding to one daily window: *start processing at*
+  and *pause processing at*, in 30-minute steps, in the **server's** local time. A stop earlier than the
+  start is an over-midnight window (22:00 → 06:00); equal times mean "all day". Outside the window
+  nothing new is claimed and any running encode is suspended at the OS level until the window opens
+  again, while evaluation and queueing carry on as normal. *Resume queue* on the control center still
+  works outside the window — it asks for confirmation and then runs until the window's next edge.
 - **Encoding profiles** — one or more named profiles. Each defines the target video codec + encoder,
   quality (CRF/QP *or* target/max bitrate), preset, resolution policy (unchanged / cap width / cap
   height / cap longest edge / match a preset), audio codec + encoder + bitrate + downmix policy,
@@ -194,7 +207,8 @@ All settings live on the plugin's page (**Dashboard → Plugins → Pre-Transcod
 3. Watch progress on the plugin's **Control center** page (Dashboard sidebar → *Pre-Transcode*): the
    queue counts, what is encoding right now with its progress and ETA, the next few jobs, the last few
    that finished, plus the sweep / pause / cancel-all / clear-finished controls and the single-item
-   search.
+   search (which matches your words against both the item's label and its file path). When a processing
+   window is holding the queue, the summary line says so and names the time it resumes.
 4. **Open full queue** and **Open full history** lead to the job list, which is paged, searchable and
    filtered — the control center never loads more than a screenful, so a library that produces tens of
    thousands of jobs no longer means a page hundreds of screens long.
@@ -277,6 +291,10 @@ To produce an installable, checksummed zip (and the catalog manifest entry), run
   cannot hold falls back to one it can — so "copy audio into mp4" no longer dies on a TrueHD track.
 - [x] Hardware-accelerated decoding (`-hwaccel`), chosen from what the server's ffmpeg reports and
   independent of the encoder the profile picks.
+- [x] Daily processing window (issue #7): a start/stop pair in 30-minute steps freezes work outside the
+  hours you choose, over-midnight windows included, with an explicit "run now" override.
+- [x] Single-item search over file names (issue #8): every word is matched against the item's label and
+  its full path, so a show name, an `S03E06` or a release tag finds the file.
 - [ ] Future — external subtitle extraction, distributed/off-box encoding.
 
 ## License

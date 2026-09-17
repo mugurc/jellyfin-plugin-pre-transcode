@@ -129,7 +129,8 @@ public class PreTranscodeController : ControllerBase
             Items = items,
             TotalRecordCount = total,
             StartIndex = Math.Max(startIndex, 0),
-            IsPaused = _queue.IsPaused
+            IsPaused = _queue.IsPaused,
+            Schedule = _queueController.GetScheduleState()
         });
     }
 
@@ -152,6 +153,7 @@ public class PreTranscodeController : ControllerBase
         return Ok(new
         {
             IsPaused = _queue.IsPaused,
+            Schedule = _queueController.GetScheduleState(),
             counts.Pending,
             counts.Processing,
             counts.Completed,
@@ -178,6 +180,7 @@ public class PreTranscodeController : ControllerBase
         return Ok(new
         {
             IsPaused = _queue.IsPaused,
+            Schedule = _queueController.GetScheduleState(),
             counts.Pending,
             counts.Processing,
             counts.Completed,
@@ -240,42 +243,73 @@ public class PreTranscodeController : ControllerBase
     }
 
     /// <summary>
-    /// Searches the library for movies and episodes matching a name, for the manual single-item panel.
+    /// Searches the library for movies and episodes for the manual single-item panel. Every
+    /// whitespace-separated word must appear in either the item's label ("Series - S03E06 - Title",
+    /// "Movie (2019)") or its full file path, so a show name, an "S03E06", a release tag like "1080p"
+    /// and a raw file-name fragment all work, alone or combined.
     /// </summary>
-    /// <param name="query">The search text (movie or episode name).</param>
-    /// <param name="limit">Maximum results to return (clamped to 1-100).</param>
-    /// <returns>The matching items.</returns>
+    /// <param name="query">The search text; at least two characters.</param>
+    /// <param name="limit">Maximum results returned (clamped to 1-500).</param>
+    /// <returns>The matching items and how many matched in total.</returns>
     [HttpGet("Library/Search")]
     [ProducesResponseType(StatusCodes.Status200OK)]
-    public ActionResult<IReadOnlyList<LibraryItemResult>> SearchLibrary([FromQuery] string? query, [FromQuery] int limit = 25)
+    public ActionResult<object> SearchLibrary([FromQuery] string? query, [FromQuery] int limit = 100)
     {
-        if (string.IsNullOrWhiteSpace(query))
+        var tokens = ItemSearch.Tokenize(query);
+
+        // Two characters minimum: matching is a walk over every library video, and a single letter
+        // matches most of them anyway.
+        if (tokens.Length == 0 || (query ?? string.Empty).Trim().Length < 2)
         {
-            return Ok(Array.Empty<LibraryItemResult>());
+            return Ok(new { Items = Array.Empty<LibraryItemResult>(), TotalRecordCount = 0 });
         }
 
+        // Jellyfin cannot filter on a path substring: InternalItemsQuery.Path is strict equality, and
+        // SearchTerm only compares the item's own name — for an episode that is the episode title, which
+        // is why a show name or an "S03E06" never matched. So the candidates are enumerated (the same
+        // query the library sweep runs) and matched here. One walk per Search click, not per keystroke.
         var items = _libraryManager.GetItemList(new InternalItemsQuery
         {
-            SearchTerm = query,
             IncludeItemTypes = new[] { BaseItemKind.Movie, BaseItemKind.Episode },
             MediaTypes = new[] { MediaType.Video },
-            IsVirtualItem = false,
+            SourceTypes = new[] { SourceType.Library },
+            IsFolder = false,
             Recursive = true,
-            Limit = Math.Clamp(limit, 1, 100)
+            IsVirtualItem = false
         });
 
-        var results = items
-            .Where(i => !string.IsNullOrEmpty(i.Path))
-            .Select(i => new LibraryItemResult
+        var matched = new List<LibraryItemResult>();
+        foreach (var item in items)
+        {
+            if (string.IsNullOrEmpty(item.Path))
             {
-                Id = i.Id.ToString("N"),
-                Name = FriendlyName(i),
-                Type = i is Episode ? "Episode" : "Movie",
-                Path = i.Path
-            })
-            .ToList();
+                continue;
+            }
 
-        return Ok(results);
+            var label = FriendlyName(item);
+            if (!ItemSearch.Matches(label, item.Path, tokens))
+            {
+                continue;
+            }
+
+            matched.Add(new LibraryItemResult
+            {
+                Id = item.Id.ToString("N"),
+                Name = label,
+                Type = item is Episode ? "Episode" : "Movie",
+                Path = item.Path
+            });
+        }
+
+        // Sorted by label so a show's episodes arrive grouped and in S01E01..SxxEyy order (the label pads
+        // both numbers), and so the first page is the same list every time.
+        matched.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+
+        return Ok(new
+        {
+            Items = matched.Take(Math.Clamp(limit, 1, 500)).ToList(),
+            TotalRecordCount = matched.Count
+        });
     }
 
     /// <summary>

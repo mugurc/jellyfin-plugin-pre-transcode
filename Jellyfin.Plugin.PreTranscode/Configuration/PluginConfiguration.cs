@@ -66,6 +66,24 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool QueuePaused { get; set; }
 
     /// <summary>
+    /// Gets or sets a value indicating whether transcoding is confined to a daily time window. When the
+    /// window is shut nothing new is claimed and any running encode is frozen at the OS level; items are
+    /// still evaluated and queued, they just wait. Off by default.
+    /// </summary>
+    public bool ProcessingWindowEnabled { get; set; }
+
+    /// <summary>
+    /// Gets or sets the minute of the day (server local time, 0-1439) at which processing starts.
+    /// </summary>
+    public int ProcessingWindowStartMinutes { get; set; }
+
+    /// <summary>
+    /// Gets or sets the minute of the day (server local time, 0-1439) at which processing stops. A stop
+    /// earlier than the start means the window runs over midnight; equal values mean the whole day.
+    /// </summary>
+    public int ProcessingWindowStopMinutes { get; set; }
+
+    /// <summary>
     /// Gets or sets the maximum number of finished (completed/failed/cancelled/skipped) jobs kept in the
     /// queue file; <c>0</c> means unlimited, which is the default and the historical behaviour.
     /// <para>

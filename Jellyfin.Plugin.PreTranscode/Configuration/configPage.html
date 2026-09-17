@@ -77,6 +77,27 @@
                     </div>
                 </div>
 
+                <!-- ============ PROCESSING SCHEDULE ============ -->
+                <div class="verticalSection">
+                    <h3 class="checkboxListLabel">Processing schedule</h3>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="ProcessingWindowEnabled" type="checkbox" is="emby-checkbox" />
+                            <span>Only transcode inside a daily time window</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">Outside the window nothing new is started and a running encode is frozen where it is (it continues later, no progress lost). Items are still evaluated and queued &mdash; they just wait. Times are your <b>server&rsquo;s</b> local time.</div>
+                    </div>
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="ProcessingWindowStartMinutes">Start processing at</label>
+                        <select is="emby-select" id="ProcessingWindowStartMinutes" class="emby-select-withcolor emby-select"></select>
+                    </div>
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="ProcessingWindowStopMinutes">Pause processing at</label>
+                        <select is="emby-select" id="ProcessingWindowStopMinutes" class="emby-select-withcolor emby-select"></select>
+                        <div class="fieldDescription" id="ProcessingWindowHint"></div>
+                    </div>
+                </div>
+
                 <!-- ============ PROFILES ============ -->
                 <div class="verticalSection">
                     <div class="sectionTitleContainer flex align-items-center">
@@ -565,7 +586,39 @@
             document.getElementById('FileStabilitySeconds').value = c.FileStabilitySeconds;
             document.getElementById('MaxFinishedJobsKept').value = c.MaxFinishedJobsKept;
             document.getElementById('VerboseRuleLogging').checked = c.VerboseRuleLogging;
+            document.getElementById('ProcessingWindowEnabled').checked = c.ProcessingWindowEnabled;
             fillHardwareDecoders();
+            fillWindowTimes();
+            syncWindow();
+        }
+        function fillWindowTimes() {
+            [['ProcessingWindowStartMinutes', state.config.ProcessingWindowStartMinutes || 0],
+             ['ProcessingWindowStopMinutes', state.config.ProcessingWindowStopMinutes || 0]].forEach(function (pair) {
+                var sel = document.getElementById(pair[0]);
+                sel.innerHTML = '';
+                for (var m = 0; m < 1440; m += 30) {
+                    var label = ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2);
+                    sel.appendChild(opt(m, label, pair[1]));
+                }
+                sel.value = pair[1];
+            });
+        }
+        // The times only mean something when the box is ticked, and an over-midnight window reads as a
+        // mistake unless the page says out loud that it is one.
+        function syncWindow() {
+            var on = document.getElementById('ProcessingWindowEnabled').checked;
+            var start = document.getElementById('ProcessingWindowStartMinutes');
+            var stop = document.getElementById('ProcessingWindowStopMinutes');
+            start.disabled = !on;
+            stop.disabled = !on;
+            var hint = document.getElementById('ProcessingWindowHint');
+            if (!on) { hint.textContent = 'Transcoding may run at any time of day.'; return; }
+            var a = start.options[start.selectedIndex].text, b = stop.options[stop.selectedIndex].text;
+            hint.textContent = a === b
+                ? 'Start and stop are the same, so transcoding is allowed all day.'
+                : (parseInt(start.value, 10) > parseInt(stop.value, 10)
+                    ? 'Transcoding runs ' + a + '–' + b + ', over midnight.'
+                    : 'Transcoding runs ' + a + '–' + b + '.');
         }
         function fillHardwareDecoders() {
             var sel = document.getElementById('HardwareDecoder');
@@ -591,6 +644,9 @@
             c.MaxFinishedJobsKept = parseInt(document.getElementById('MaxFinishedJobsKept').value, 10) || 0;
             c.VerboseRuleLogging = document.getElementById('VerboseRuleLogging').checked;
             c.HardwareDecoder = document.getElementById('HardwareDecoder').value;
+            c.ProcessingWindowEnabled = document.getElementById('ProcessingWindowEnabled').checked;
+            c.ProcessingWindowStartMinutes = parseInt(document.getElementById('ProcessingWindowStartMinutes').value, 10) || 0;
+            c.ProcessingWindowStopMinutes = parseInt(document.getElementById('ProcessingWindowStopMinutes').value, 10) || 0;
             c.DefaultProfileId = document.getElementById('DefaultProfileId').value;
         }
 
@@ -662,6 +718,9 @@
             });
         });
         page.querySelector('#lnkQueue').addEventListener('click', function (e) { e.preventDefault(); Dashboard.navigate('configurationpage?name=PreTranscodeQueue'); });
+        page.querySelector('#ProcessingWindowEnabled').addEventListener('change', syncWindow);
+        page.querySelector('#ProcessingWindowStartMinutes').addEventListener('change', syncWindow);
+        page.querySelector('#ProcessingWindowStopMinutes').addEventListener('change', syncWindow);
         page.querySelector('#PreTranscodeConfigForm').addEventListener('submit', function (e) { e.preventDefault(); save(); return false; });
 
         page.addEventListener('pageshow', function () { state._editing = null; });

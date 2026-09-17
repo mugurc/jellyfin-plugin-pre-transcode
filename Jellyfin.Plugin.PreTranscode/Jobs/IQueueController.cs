@@ -23,4 +23,10 @@ public interface IQueueController
     /// Resumes the queue: continues any suspended encode where it left off and lets new jobs be claimed.
     /// </summary>
     void Resume();
+
+    /// <summary>
+    /// Gets the current state of the daily processing window, so a page can explain an automatic pause.
+    /// </summary>
+    /// <returns>The window state.</returns>
+    QueueScheduleState GetScheduleState();
 }

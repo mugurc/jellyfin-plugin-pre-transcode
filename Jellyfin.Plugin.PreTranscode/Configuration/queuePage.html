@@ -55,9 +55,9 @@
 
             <div class="verticalSection">
                 <h3 class="sectionTitle" style="margin-bottom:0.2em;">Transcode a single item</h3>
-                <p class="fieldDescription">Search for a movie or episode and queue just that one, on demand &mdash; independent of the trigger rules and the automatic sweep. It is still skipped at run time if already compliant with the chosen profile.</p>
+                <p class="fieldDescription">Search for a movie or episode and queue just that one, on demand &mdash; independent of the trigger rules and the automatic sweep. It is still skipped at run time if already compliant with the chosen profile. Words are matched against the title and the file path, and all of them must match &mdash; so &ldquo;someshow s03e06&rdquo;, &ldquo;someshow 1080p&rdquo; or a file-name fragment all work.</p>
                 <div class="flex align-items-center" style="gap:0.6em;flex-wrap:wrap;margin:0.4em 0;">
-                    <input is="emby-input" type="text" id="singleSearch" placeholder="Movie or episode name&hellip;" style="min-width:18em;" />
+                    <input is="emby-input" type="text" id="singleSearch" placeholder="Show name, file name, S03E06, 1080p&hellip;" style="min-width:18em;" />
                     <select is="emby-select" id="singleProfile" style="min-width:16em;"></select>
                     <button is="emby-button" type="button" id="btnSingleSearch" class="raised"><span>Search</span></button>
                 </div>
@@ -72,6 +72,7 @@
         var timer = null;
         var sweepTimer = null;
         var lastSig = null;
+        var lastSchedule = {};
 
         // Live cells of the rendered rows, so a poll can tick the progress bar, the ETA and the "x ago"
         // texts without rebuilding anything — a rebuild destroys the Cancel button under the pointer.
@@ -139,7 +140,7 @@
         function renderProcessing(jobs, paused) {
             var host = document.getElementById('processing');
             if (!jobs.length) {
-                host.innerHTML = '<p class="fieldDescription">' + (paused ? 'Paused — nothing is encoding.' : 'Idle — nothing is encoding right now.') + '</p>';
+                host.innerHTML = '<p class="fieldDescription">' + (paused ? 'Held — nothing is encoding (see the line above).' : 'Idle — nothing is encoding right now.') + '</p>';
                 return;
             }
 
@@ -231,6 +232,11 @@
                 var upNext = st.UpNext || [];
                 var recent = st.Recent || [];
                 var finishedTotal = (st.Completed || 0) + (st.Failed || 0) + (st.Cancelled || 0) + (st.Skipped || 0);
+                lastSchedule = st.Schedule || {};
+
+                // Why nothing is running: a manual pause, the processing window, or an override of it.
+                var prefix = statusPrefix(st);
+                var held = st.IsPaused || !!(st.Schedule && st.Schedule.Holding);
 
                 setError('');
 
@@ -238,7 +244,7 @@
                 // so after "Cancel all" the summary showed near-zero counts above "… and 47 more in the
                 // history", with no line saying where they had gone.
                 document.getElementById('summary').textContent =
-                    (st.IsPaused ? '⏸ PAUSED — ' : '') +
+                    prefix +
                     'Pending: ' + (st.Pending || 0) + ' · Processing: ' + (st.Processing || 0) +
                     ' · Completed: ' + (st.Completed || 0) + ' · Failed: ' + (st.Failed || 0) +
                     ' · Cancelled: ' + (st.Cancelled || 0) + ' · Skipped: ' + (st.Skipped || 0);
@@ -248,19 +254,19 @@
                 // refreshed in place below. Folding a clock into this signature rebuilt the whole section
                 // every 2s, which destroys and recreates the Cancel button under the pointer; leaving the
                 // clock out entirely, as before, froze "4s ago" for ever once the queue went idle.
-                var sig = JSON.stringify([st.IsPaused ? 1 : 0, st.Pending, finishedTotal,
+                var sig = JSON.stringify([prefix, st.Pending, finishedTotal,
                     processing.map(function (j) { return [j.Id, j.StatusDetail]; }),
                     upNext.map(function (j) { return j.Id; }),
                     recent.map(function (j) { return [j.Id, j.Status, j.OutputPath, j.ErrorMessage]; })]);
 
                 if (sig !== lastSig) {
                     lastSig = sig;
-                    renderProcessing(processing, st.IsPaused);
+                    renderProcessing(processing, held);
                     renderUpNext(upNext, st.Pending || 0);
                     renderRecent(recent, finishedTotal);
                 }
 
-                refreshVolatile(processing, recent, st.IsPaused);
+                refreshVolatile(processing, recent, held);
             }, function () {
                 // Without this the promise rejected unhandled every 2s and the control center went on
                 // showing the last good snapshot for ever — counts, progress bar and ETA all frozen but
@@ -273,6 +279,15 @@
             var el = document.getElementById('loadError');
             el.textContent = text;
             el.style.display = text ? '' : 'none';
+        }
+
+        // Why nothing is running: a manual pause, the processing window, or an admin overriding it.
+        function statusPrefix(st) {
+            var s = st.Schedule || {};
+            if (st.IsPaused) { return '⏸ PAUSED — '; }
+            if (s.Holding) { return '⏸ OUTSIDE THE PROCESSING WINDOW ' + s.Start + '–' + s.Stop + ' (resumes ' + s.NextChange + ') — '; }
+            if (s.Enabled && !s.Open) { return '▶ RUNNING OUTSIDE THE WINDOW (until ' + s.NextChange + ') — '; }
+            return '';
         }
 
         function refreshVolatile(processing, recent, paused) {
@@ -330,7 +345,7 @@
             });
         }
 
-        function renderResults(items) {
+        function renderResults(items, total) {
             var host = document.getElementById('singleResults');
             host.innerHTML = '';
             if (!items || !items.length) { host.innerHTML = '<p class="fieldDescription">No matches.</p>'; return; }
@@ -351,14 +366,21 @@
                 row.appendChild(btn);
                 host.appendChild(row);
             });
+            if (total > items.length) {
+                var more = document.createElement('p');
+                more.className = 'fieldDescription';
+                more.textContent = 'Showing the first ' + items.length + ' of ' + total + ' matches — add another word to narrow it down.';
+                host.appendChild(more);
+            }
         }
 
         function searchSingle() {
             var q = (document.getElementById('singleSearch').value || '').trim();
             showSingleMsg('');
-            if (!q) { renderResults([]); return; }
-            api('GET', 'Library/Search?query=' + encodeURIComponent(q) + '&limit=25').then(function (items) {
-                renderResults(items || []);
+            if (q.length < 2) { renderResults([], 0); showSingleMsg('Type at least two characters.'); return; }
+            api('GET', 'Library/Search?query=' + encodeURIComponent(q) + '&limit=100').then(function (data) {
+                data = data || {};
+                renderResults(data.Items || [], data.TotalRecordCount || 0);
             }, function () { showSingleMsg('Search failed.'); });
         }
 
@@ -384,7 +406,11 @@
             }, function () { setError('Could not start the library scan.'); });
         });
         page.querySelector('#btnPause').addEventListener('click', function () { api('POST', 'Queue/Pause').then(load); });
-        page.querySelector('#btnResume').addEventListener('click', function () { api('POST', 'Queue/Resume').then(load); });
+        page.querySelector('#btnResume').addEventListener('click', function () {
+            if (lastSchedule.Holding && !window.confirm('The processing window ' + lastSchedule.Start + '–' + lastSchedule.Stop
+                + ' is closed. Start processing now anyway? It will stop again at ' + lastSchedule.NextChange + '.')) { return; }
+            api('POST', 'Queue/Resume').then(load);
+        });
         page.querySelector('#btnCancelAll').addEventListener('click', function () {
             if (window.confirm('Cancel all pending and processing jobs? Any running encode will be aborted.')) {
                 api('POST', 'Jobs/CancelAll').then(load);

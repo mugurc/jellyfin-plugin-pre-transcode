@@ -40,6 +40,11 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
     // runs to completion.
     private readonly ConcurrentDictionary<string, byte> _cancelRequested = new();
 
+    // The window gate, both guarded by _suspendLock like the paused flag and _suspended: the window is a
+    // second reason to hold work, and an admin can override a shut window until its next edge.
+    private bool _windowOpen = true;
+    private bool _scheduleOverride;
+
     private CancellationTokenSource? _stopCts;
     private Task? _loop;
     private int _inFlight;
@@ -61,6 +66,17 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
         if (paused)
         {
             _logger.LogInformation("Pre-Transcode queue is paused (restored from the saved configuration)");
+        }
+
+        // Logged once at startup: an admin asking "why is nothing encoding at 19:00" is answered by this
+        // line before anything else in the log.
+        var config = Plugin.Instance?.Configuration;
+        if (config?.ProcessingWindowEnabled == true)
+        {
+            _logger.LogInformation(
+                "Pre-Transcode processing window is {Start}-{Stop} (server local time)",
+                ProcessingWindow.Format(config.ProcessingWindowStartMinutes),
+                ProcessingWindow.Format(config.ProcessingWindowStopMinutes));
         }
 
         // Nothing is encoding yet, so anything still in the temp directory is debris from a cancel that
@@ -191,12 +207,20 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
     //
     // Holding the lock across both makes the start-time hook — which reads the flag under the same lock —
     // see a flag and a set that always agree. _suspended.Add still gates each suspend, so no process can
-    // be suspended twice and be left frozen after a single Resume.
-    public void Pause()
+    // be suspended twice and be left frozen after a single Resume. The window gate (_windowOpen,
+    // _scheduleOverride) is the same piece of state and obeys the same rule: it is only ever read and
+    // written inside _suspendLock, together with the suspend/resume it implies.
+
+    // Requires _suspendLock. Nothing may run while the admin has paused, or while the processing window
+    // is shut and has not been explicitly overridden.
+    private bool HoldRequired() => _queue.IsPaused || !(_windowOpen || _scheduleOverride);
+
+    // Requires _suspendLock. Idempotent: _suspended gates each process so a second suspend (which on
+    // Windows needs a second resume) can never happen, and a resume only touches what we froze.
+    private void ApplyHold()
     {
-        lock (_suspendLock)
+        if (HoldRequired())
         {
-            _queue.IsPaused = true;
             foreach (var (id, process) in _activeProcesses)
             {
                 if (_suspended.Add(id))
@@ -204,6 +228,28 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
                     ProcessSuspender.Suspend(process);
                 }
             }
+
+            return;
+        }
+
+        foreach (var id in _suspended)
+        {
+            if (_activeProcesses.TryGetValue(id, out var process))
+            {
+                ProcessSuspender.Resume(process);
+            }
+        }
+
+        _suspended.Clear();
+    }
+
+    public void Pause()
+    {
+        lock (_suspendLock)
+        {
+            _queue.IsPaused = true;
+            _scheduleOverride = false;
+            ApplyHold();
         }
 
         PersistPaused(true);
@@ -213,20 +259,63 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
     {
         lock (_suspendLock)
         {
-            // Unfreeze what we actually suspended, exactly once each, before letting the loop claim more.
-            foreach (var id in _suspended)
+            _queue.IsPaused = false;
+
+            // Resuming while the window is shut is an explicit "run now"; it lasts until the window's
+            // next edge. Without it the Resume button would look broken for most of the day.
+            if (!_windowOpen)
             {
-                if (_activeProcesses.TryGetValue(id, out var process))
-                {
-                    ProcessSuspender.Resume(process);
-                }
+                _scheduleOverride = true;
             }
 
-            _suspended.Clear();
-            _queue.IsPaused = false;
+            ApplyHold();
         }
 
         PersistPaused(false);
+    }
+
+    // Folds the wall-clock verdict into the hold state and reports whether work is held and whether this
+    // tick crossed a window edge. The lock is kept out of the async loop: the loop calls this.
+    private (bool Held, bool Edge) ApplyWindow(bool windowOpen)
+    {
+        lock (_suspendLock)
+        {
+            var edge = _windowOpen != windowOpen;
+            if (edge)
+            {
+                _windowOpen = windowOpen;
+
+                // An edge ends a "run now" override, so a window that closes really does stop work.
+                _scheduleOverride = false;
+            }
+
+            ApplyHold();
+            return (HoldRequired(), edge);
+        }
+    }
+
+    public QueueScheduleState GetScheduleState()
+    {
+        var config = Plugin.Instance?.Configuration;
+        var enabled = config?.ProcessingWindowEnabled == true;
+        var start = ProcessingWindow.Normalize(config?.ProcessingWindowStartMinutes ?? 0);
+        var stop = ProcessingWindow.Normalize(config?.ProcessingWindowStopMinutes ?? 0);
+        var open = ProcessingWindow.IsOpen(config, DateTime.Now);
+        bool overridden;
+        lock (_suspendLock)
+        {
+            overridden = _scheduleOverride;
+        }
+
+        return new QueueScheduleState
+        {
+            Enabled = enabled,
+            Open = open,
+            Overridden = overridden,
+            Start = ProcessingWindow.Format(start),
+            Stop = ProcessingWindow.Format(stop),
+            NextChange = enabled && start != stop ? ProcessingWindow.Format(open ? stop : start) : string.Empty
+        };
     }
 
     // Best-effort: the in-memory flag is what actually gates the loop, so a config write that fails must
@@ -269,7 +358,21 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
                 // hand-edited or API-set MaxConcurrentJobs could otherwise spawn an unbounded number of
                 // ffmpeg processes and exhaust the host.
                 var maxConcurrency = Math.Clamp(config?.MaxConcurrentJobs ?? 1, 1, 32);
-                var enabled = config?.Enabled == true && !_queue.IsPaused;
+
+                // The window is wall-clock, so this is deliberately local time: "not before 22:00" means
+                // 22:00 on the clock in the room, and a DST shift moves the window with it.
+                var windowOpen = ProcessingWindow.IsOpen(config, DateTime.Now);
+                var (held, edge) = ApplyWindow(windowOpen);
+                if (edge)
+                {
+                    _logger.LogInformation(
+                        "Pre-Transcode processing window {State} ({Start}-{Stop}, server local time)",
+                        windowOpen ? "opened" : "closed",
+                        ProcessingWindow.Format(config?.ProcessingWindowStartMinutes ?? 0),
+                        ProcessingWindow.Format(config?.ProcessingWindowStopMinutes ?? 0));
+                }
+
+                var enabled = config?.Enabled == true && !held;
 
                 if (!enabled || Volatile.Read(ref _inFlight) >= maxConcurrency)
                 {
@@ -336,7 +439,7 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
                             // gates it so this can never double-suspend with a concurrent Pause().
                             lock (_suspendLock)
                             {
-                                if (_queue.IsPaused && _suspended.Add(job.Id))
+                                if (HoldRequired() && _suspended.Add(job.Id))
                                 {
                                     ProcessSuspender.Suspend(process);
                                 }
