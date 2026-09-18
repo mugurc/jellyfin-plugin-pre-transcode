@@ -26,7 +26,7 @@ public class RealFfmpegIntegrationTests
         var ffprobe = FfmpegTestBinaries.Find("ffprobe");
         if (ffmpeg is null || ffprobe is null)
         {
-            return; // No local ffmpeg (CI) — nothing to exercise.
+            return; // No ffmpeg on this machine — nothing to exercise. CI installs one.
         }
 
         var work = Path.Combine(Path.GetTempPath(), "pretranscode-it-" + Path.GetRandomFileName());
@@ -105,7 +105,7 @@ public class RealFfmpegIntegrationTests
         var ffprobe = FfmpegTestBinaries.Find("ffprobe");
         if (ffmpeg is null || ffprobe is null)
         {
-            return; // No local ffmpeg (CI) — nothing to exercise.
+            return; // No ffmpeg on this machine — nothing to exercise. CI installs one.
         }
 
         var work = Path.Combine(Path.GetTempPath(), "pretranscode-audio-" + Path.GetRandomFileName());

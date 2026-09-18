@@ -11,7 +11,7 @@ namespace Jellyfin.Plugin.PreTranscode.Tests;
 /// The suspend path used to send its signal by starting <c>/bin/kill</c> and waiting for it, and on
 /// macOS that wait never returned: the signal was delivered (the child really did stop) but
 /// <c>Suspend</c> never handed control back, so pausing the queue wedged the worker while holding a
-/// suspended encode. The only test that touched this needed a real ffmpeg, and CI has none — so it never
+/// suspended encode. The only test that touched this needed a real ffmpeg, which CI then lacked — so it never
 /// ran anywhere it would have failed. This one needs nothing but a shell utility, which is the point.
 /// </para>
 /// </summary>

@@ -5,7 +5,7 @@ namespace Jellyfin.Plugin.PreTranscode.Tests;
 
 /// <summary>
 /// Locates an ffmpeg/ffprobe binary for the integration tests, which run against the real encoder when
-/// one is present and skip themselves when it is not (CI has none).
+/// one is present and skip themselves when it is not. CI installs ffmpeg so they run there too.
 /// <para>
 /// Shared because the three integration suites each grew their own copy and they had already drifted:
 /// two searched <c>PATH</c> after the well-known install locations and one did not, so the end-to-end

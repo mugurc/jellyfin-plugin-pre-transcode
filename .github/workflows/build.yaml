@@ -33,6 +33,14 @@ jobs:
       - name: Build (Release)
         run: dotnet build --configuration Release --no-restore
 
+      - name: Install ffmpeg
+        # The integration suites locate ffmpeg/ffprobe and skip themselves when the machine has none,
+        # reporting a pass without running anything. The runner image ships neither, so install them:
+        # apt puts both in /usr/bin, where FfmpegTestBinaries.Find looks first.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Test
         run: dotnet test --configuration Release --no-build --verbosity minimal
 
