@@ -11,7 +11,7 @@ body:
         designed against, and there is often a simpler answer than the one that comes to mind first.
 
         Please check [What is in and out of scope](https://github.com/mugurc/jellyfin-plugin-pre-transcode/blob/main/CONTRIBUTING.md#what-is-in-and-out-of-scope)
-        and the [Roadmap](https://github.com/mugurc/jellyfin-plugin-pre-transcode#roadmap) first.
+        and [What's next](https://github.com/mugurc/jellyfin-plugin-pre-transcode#whats-next) first.
 
   - type: checkboxes
     id: preflight

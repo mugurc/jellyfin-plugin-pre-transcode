@@ -267,35 +267,32 @@ To produce an installable, checksummed zip (and the catalog manifest entry), run
 ./build-plugin.ps1 -Version 0.10.0.0
 ```
 
-## Roadmap
+## What's next
 
-- [x] Phase 1 — Scaffold: plugin loads, config page.
-- [x] Phase 2 — Configuration schema + dynamic, ffmpeg-driven dashboard UI (unit-tested parser).
-- [x] Phase 3 — Rule-evaluation engine (pure, unit-tested).
-- [x] Phase 4 — ffmpeg command builder (pure, unit-tested).
-- [x] Phase 5 — Persistent job queue + worker (temp-write, verify, apply output policy). Validated
-  end-to-end against real ffmpeg (HEVC/MKV → H.264/MP4, source preserved).
-- [x] Phase 6 — Library-scan hook + item-added monitor + scheduled sweep task, per-library rules.
-- [x] Multi-track audio preservation (all languages; copy-if-compatible) and lossless subtitle +
-  font passthrough for Matroska outputs.
-- [x] Reliable automatic queueing of new items: files still being copied/downloaded are deferred and
-  re-checked until they settle rather than skipped until the next sweep; config no longer duplicates
-  presets/rules across restarts.
-- [x] Idempotent sweeps: a source whose expected output already exists on disk is never re-transcoded,
-  and one that keeps failing is no longer auto-retried indefinitely.
-- [x] Per-container subtitle negotiation: tracks the output container can store are copied verbatim,
-  the rest converted (an mp4 source's `mov_text` → srt), so mp4 sources transcode to Matroska
-  successfully and keep their subtitles.
-- [x] Per-container audio negotiation: the same treatment for audio. A track the output container
-  cannot store is re-encoded instead of copied, and a profile whose target audio codec the container
-  cannot hold falls back to one it can — so "copy audio into mp4" no longer dies on a TrueHD track.
-- [x] Hardware-accelerated decoding (`-hwaccel`), chosen from what the server's ffmpeg reports and
-  independent of the encoder the profile picks.
-- [x] Daily processing window (issue #7): a start/stop pair in 30-minute steps freezes work outside the
-  hours you choose, over-midnight windows included, with an explicit "run now" override.
-- [x] Single-item search over file names (issue #8): every word is matched against the item's label and
-  its full path, so a show name, an `S03E06` or a release tag finds the file.
-- [ ] Future — external subtitle extraction, distributed/off-box encoding.
+Nothing here is promised and the order is not fixed. Each item is a problem the plugin does **not**
+solve today; if one of them is the one costing you time, say so in an issue — that is what moves it up.
+
+- **Hardware decoding fails every job instead of failing the setting.** The `-hwaccel` dropdown lists
+  what your ffmpeg was *built* with, which is not what the machine can actually open: a cuda-enabled
+  build on a box with no NVIDIA card turns every job red one after another, and the only clue is the
+  ffmpeg error on the queue page. Attempting a one-frame decode when the setting is saved would reject
+  the method there, once, instead of at every encode.
+- **`VideoBitrateKbps` is unusable on the container most libraries are in.** Matroska carries no
+  per-stream video bitrate, so the condition reports `unknown (probe reported none)` and fails for any
+  operator — on exactly the files people most want to shrink. The obvious fix is already ruled out: the
+  format-level total covers audio and subtitles too, and reporting it as the video figure would inflate
+  it (`MediaProber.cs`). So this needs an estimate that subtracts the other tracks' share and is
+  labelled as an estimate, not a probe result — a rule only needs to know which side of a threshold a
+  file sits on, but a *wrong* answer here silently re-encodes the wrong files.
+- **External subtitle extraction.** Write embedded subtitle tracks out as sibling `.srt` files, for
+  clients that will not render a muxed track.
+- **A missing ffmpeg still passes the test suite.** The integration suites return early when they
+  cannot find a binary, which xUnit counts as a pass rather than a skip. CI installs ffmpeg now, but
+  nothing would notice if that stopped working — an environment variable that turns "not found" into a
+  failure would close the hole for good.
+
+Version history is in the [releases](https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases),
+each with its own notes; what the plugin does **today** is the [Features](#features) list above.
 
 ## Contributing
 
