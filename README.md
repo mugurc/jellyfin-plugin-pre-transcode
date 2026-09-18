@@ -272,24 +272,32 @@ To produce an installable, checksummed zip (and the catalog manifest entry), run
 Nothing here is promised and the order is not fixed. Each item is a problem the plugin does **not**
 solve today; if one of them is the one costing you time, say so in an issue — that is what moves it up.
 
-- **Hardware decoding fails every job instead of failing the setting.** The `-hwaccel` dropdown lists
-  what your ffmpeg was *built* with, which is not what the machine can actually open: a cuda-enabled
-  build on a box with no NVIDIA card turns every job red one after another, and the only clue is the
-  ffmpeg error on the queue page. Attempting a one-frame decode when the setting is saved would reject
-  the method there, once, instead of at every encode.
-- **`VideoBitrateKbps` is unusable on the container most libraries are in.** Matroska carries no
+- **Hardware decoding fails every job instead of failing the setting**
+  ([#9](https://github.com/mugurc/jellyfin-plugin-pre-transcode/issues/9))**.** The `-hwaccel` dropdown lists
+  what your ffmpeg was *built* with, which is not what the machine can actually open: a cuda-enabled build on
+  a box with no NVIDIA card turns every job red one after another, and the only clue is the ffmpeg error on
+  the queue page. Attempting a one-frame decode when the setting is saved would reject the method there, once,
+  instead of at every encode.
+- **`VideoBitrateKbps` is unusable on the container most libraries are in**
+  ([#10](https://github.com/mugurc/jellyfin-plugin-pre-transcode/issues/10))**.** Matroska carries no
   per-stream video bitrate, so the condition reports `unknown (probe reported none)` and fails for any
   operator — on exactly the files people most want to shrink. The obvious fix is already ruled out: the
-  format-level total covers audio and subtitles too, and reporting it as the video figure would inflate
-  it (`MediaProber.cs`). So this needs an estimate that subtracts the other tracks' share and is
-  labelled as an estimate, not a probe result — a rule only needs to know which side of a threshold a
-  file sits on, but a *wrong* answer here silently re-encodes the wrong files.
-- **External subtitle extraction.** Write embedded subtitle tracks out as sibling `.srt` files, for
-  clients that will not render a muxed track.
-- **A missing ffmpeg still passes the test suite.** The integration suites return early when they
-  cannot find a binary, which xUnit counts as a pass rather than a skip. CI installs ffmpeg now, but
-  nothing would notice if that stopped working — an environment variable that turns "not found" into a
-  failure would close the hole for good.
+  format-level total covers audio and subtitles too, and reporting it as the video figure would inflate it
+  (`MediaProber.cs`). So this needs an estimate that subtracts the other tracks' share and is labelled as an
+  estimate, not a probe result — a rule only needs to know which side of a threshold a file sits on, but a
+  *wrong* answer here silently re-encodes the wrong files.
+- **External subtitle extraction**
+  ([#11](https://github.com/mugurc/jellyfin-plugin-pre-transcode/issues/11))**.** Write embedded subtitle
+  tracks out as sibling `.srt` files, for clients that will not render a muxed track.
+- **A missing ffmpeg still passes the test suite**
+  ([#12](https://github.com/mugurc/jellyfin-plugin-pre-transcode/issues/12), *good first issue*)**.** The
+  integration suites return early when they cannot find a binary, which xUnit counts as a pass rather than a
+  skip. CI installs ffmpeg now, but nothing would notice if that stopped working — an environment variable
+  that turns "not found" into a failure would close the hole for good.
+
+Each links to an issue — that is where the thinking happens, and where a comment counts as a vote.
+Issues labelled [good first issue](https://github.com/mugurc/jellyfin-plugin-pre-transcode/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+are the ones that need no Jellyfin server to work on.
 
 Version history is in the [releases](https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases),
 each with its own notes; what the plugin does **today** is the [Features](#features) list above.
