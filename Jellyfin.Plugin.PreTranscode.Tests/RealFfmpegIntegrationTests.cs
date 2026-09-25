@@ -214,4 +214,97 @@ public class RealFfmpegIntegrationTests
 
         Assert.Distinct(methods);
     }
+    /// <summary>
+    /// Issue #14, against the real prober, encoder and verifier. A Matroska container can ask for a crop
+    /// (the <c>PixelCrop*</c> elements) which ffprobe reports as side data while leaving width/height at
+    /// the coded size, and which ffmpeg then applies by itself. The verifier compared the cropped output
+    /// against the uncropped source and discarded a correct three-and-a-half-hour encode.
+    /// <para>
+    /// The shape here is the reporter's: 16:9 coded, 2.40:1 displayed. Their file was 3840x2160 cropped by
+    /// 280 top and bottom; this is the same geometry a quarter of the size, so it runs in seconds.
+    /// </para>
+    /// </summary>
+    /// <returns>A task.</returns>
+    [Fact]
+    public async Task ContainerCroppedSource_IsEncodedAndVerified()
+    {
+        var ffmpeg = FfmpegTestBinaries.Find("ffmpeg");
+        var ffprobe = FfmpegTestBinaries.Find("ffprobe");
+
+        // mkvpropedit is the only way to author container crop: ffmpeg's matroska muxer cannot write
+        // PixelCrop elements, and bitstream cropping (an HEVC conformance window) is a different
+        // mechanism that ffprobe already reports as the cropped size. CI installs mkvtoolnix for this.
+        var mkvpropedit = FfmpegTestBinaries.Find("mkvpropedit");
+        if (ffmpeg is null || ffprobe is null || mkvpropedit is null)
+        {
+            return; // No ffmpeg/mkvtoolnix on this machine — nothing to exercise. CI installs both.
+        }
+
+        var work = Path.Combine(Path.GetTempPath(), "pretranscode-crop-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(work);
+        var source = Path.Combine(work, "source.mkv");
+        var output = Path.Combine(work, "output.mp4");
+
+        try
+        {
+            var genArgs = "-y -f lavfi -i testsrc=size=1920x1080:rate=24:duration=2 "
+                + "-f lavfi -i sine=frequency=440:duration=2 "
+                + "-c:v libx264 -preset ultrafast -crf 30 -c:a aac -shortest \"" + source + "\"";
+            await ProcessRunner.RunAsync(ffmpeg, genArgs, 60000, CancellationToken.None);
+            Assert.True(File.Exists(source), "failed to generate test clip");
+
+            // 140 off the top and bottom turns a 16:9 coded frame into a 2.40:1 displayed one.
+            await ProcessRunner.RunAsync(
+                mkvpropedit,
+                "\"" + source + "\" --edit track:v1 --set pixel-crop-top=140 --set pixel-crop-bottom=140",
+                60000,
+                CancellationToken.None);
+
+            var encoder = new Mock<IMediaEncoder>();
+            encoder.SetupGet(x => x.EncoderPath).Returns(ffmpeg);
+            encoder.SetupGet(x => x.ProbePath).Returns(ffprobe);
+            var prober = new MediaProber(encoder.Object, NullLogger<MediaProber>.Instance);
+
+            var info = await prober.ProbeAsync(source, CancellationToken.None);
+            Assert.NotNull(info);
+
+            // If this fails, mkvpropedit did not write the crop or ffprobe did not report it, and the rest
+            // of the test would pass for the wrong reason.
+            Assert.True(info!.HasContainerCrop, "the source carries no container crop");
+            Assert.Equal(1920, info.Width);
+            Assert.Equal(800, info.Height);
+            Assert.Equal(1080, info.CodedHeight);
+
+            var profile = new EncodingProfile
+            {
+                VideoCodec = "h264", VideoEncoder = "libx264", VideoQualityMode = QualityMode.Crf, Crf = 30,
+                Preset = "ultrafast", AudioCodec = "aac", AudioEncoder = "aac", AudioBitrateKbps = 128,
+                Container = "mp4", ResolutionMode = ResolutionMode.Unchanged, ChannelPolicy = AudioChannelPolicy.Unchanged
+            };
+            var args = FfmpegCommandBuilder.BuildArguments(profile, info, Array.Empty<ResolutionPreset>(), source, output);
+
+            var (exitCode, stdErr) = await FfmpegExecutor.RunAsync(ffmpeg, args, info.DurationSeconds, null, CancellationToken.None);
+            Assert.True(exitCode == 0, "ffmpeg failed: " + stdErr);
+
+            // What the bug was: this is the gate that threw the encode away.
+            var (ok, reason) = await OutputVerifier.VerifyAsync(prober, output, info, CancellationToken.None);
+            Assert.True(ok, "verification failed: " + reason);
+
+            var outInfo = await prober.ProbeAsync(output, CancellationToken.None);
+            Assert.NotNull(outInfo);
+            Assert.Equal(800, outInfo!.Height);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(work, recursive: true);
+            }
+            catch (IOException)
+            {
+                // best effort
+            }
+        }
+    }
+
 }

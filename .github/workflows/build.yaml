@@ -33,13 +33,16 @@ jobs:
       - name: Build (Release)
         run: dotnet build --configuration Release --no-restore
 
-      - name: Install ffmpeg
+      - name: Install ffmpeg and mkvtoolnix
         # The integration suites locate ffmpeg/ffprobe and skip themselves when the machine has none,
         # reporting a pass without running anything. The runner image ships neither, so install them:
         # apt puts both in /usr/bin, where FfmpegTestBinaries.Find looks first.
+        #
+        # mkvtoolnix is for the container-crop test (issue #14): mkvpropedit is the only way to author the
+        # Matroska PixelCrop elements that reproduce it, since ffmpeg's muxer cannot write them.
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          sudo apt-get install -y --no-install-recommends ffmpeg mkvtoolnix
 
       - name: Test
         run: dotnet test --configuration Release --no-build --verbosity minimal
