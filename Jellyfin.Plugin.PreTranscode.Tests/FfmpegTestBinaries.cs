@@ -58,7 +58,11 @@ internal static class FfmpegTestBinaries
                 // A malformed PATH entry (illegal characters) is not worth failing a test lookup over.
             }
         }
-
+        var requireFfmpeg = Environment.GetEnvironmentVariable("PRETRANSCODE_REQUIRE_FFMPEG");
+        if (requireFfmpeg == "1")
+        {
+            throw new InvalidOperationException($"Could not find {name} in any of the well-known locations or on PATH");
+        }
         return null;
     }
 }
