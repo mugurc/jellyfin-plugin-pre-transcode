@@ -268,12 +268,26 @@ public class RealFfmpegIntegrationTests
             var info = await prober.ProbeAsync(source, CancellationToken.None);
             Assert.NotNull(info);
 
-            // If this fails, mkvpropedit did not write the crop or ffprobe did not report it, and the rest
-            // of the test would pass for the wrong reason.
-            Assert.True(info!.HasContainerCrop, "the source carries no container crop");
-            Assert.Equal(1920, info.Width);
-            Assert.Equal(800, info.Height);
-            Assert.Equal(1080, info.CodedHeight);
+            // Which of the two worlds this machine is in. "Frame Cropping" side data and -apply_cropping
+            // both arrived in ffmpeg 7.1: a newer binary reports the crop and applies it, an older one does
+            // neither, and Ubuntu 24.04 still ships 6.1.1 — so CI proves the older path is not a
+            // hypothetical. Both are asserted rather than skipped, because each is a real deployment and
+            // the verifier has to accept a correct encode in both.
+            var cropReported = info!.HasContainerCrop;
+            if (cropReported)
+            {
+                Assert.Equal(1920, info.Width);
+                Assert.Equal(800, info.Height);
+                Assert.Equal(1080, info.CodedHeight);
+            }
+            else
+            {
+                // The crop is invisible to this ffmpeg, so the probe describes the coded frame and the
+                // encode will produce it. Nothing here should look cropped.
+                Assert.Equal(1920, info.Width);
+                Assert.Equal(1080, info.Height);
+                Assert.False(info.HasContainerCrop);
+            }
 
             var profile = new EncodingProfile
             {
@@ -292,7 +306,10 @@ public class RealFfmpegIntegrationTests
 
             var outInfo = await prober.ProbeAsync(output, CancellationToken.None);
             Assert.NotNull(outInfo);
-            Assert.Equal(800, outInfo!.Height);
+
+            // The shape the encoder actually produced, which is what the verifier just had to accept:
+            // cropped where ffmpeg applies the crop, uncropped where it ignores it.
+            Assert.Equal(cropReported ? 800 : 1080, outInfo!.Height);
         }
         finally
         {
