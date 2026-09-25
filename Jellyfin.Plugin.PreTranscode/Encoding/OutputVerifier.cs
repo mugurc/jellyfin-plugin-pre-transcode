@@ -80,12 +80,21 @@ internal static class OutputVerifier
             // Scaling changes a picture's size, never its shape. The 15% band absorbs even-dimension
             // rounding and anamorphic sources; what it is here to catch — portrait cover art standing in
             // for a landscape film — is out by a factor of two or more.
-            var sourceAspect = source.Width / (double)source.Height;
+            //
+            // Both the displayed and the coded shape are accepted, because whether a container crop
+            // reaches the output is not ours to decide: ffmpeg applies it from 7.1 onwards and ignores it
+            // before that, and the server's ffmpeg is whatever it is. A 3840x2160 source cropped to
+            // 3840x1600 therefore verifies against either figure — and cover art at 600x900 still matches
+            // neither, which is the whole point of the check (issue #14).
             var outputAspect = output.Width / (double)output.Height;
-            if (Math.Abs(outputAspect - sourceAspect) > sourceAspect * 0.15)
+            if (!ShapeMatches(outputAspect, source.Width, source.Height)
+                && !ShapeMatches(outputAspect, source.CodedWidth, source.CodedHeight))
             {
+                var coded = source.HasContainerCrop
+                    ? FormattableString.Invariant($" (coded {source.CodedWidth}x{source.CodedHeight})")
+                    : string.Empty;
                 return (false, FormattableString.Invariant(
-                    $"output shape does not match the source: {output.Width}x{output.Height} encoded from {source.Width}x{source.Height}"));
+                    $"output shape does not match the source: {output.Width}x{output.Height} encoded from {source.Width}x{source.Height}{coded}"));
             }
         }
 
@@ -98,5 +107,18 @@ internal static class OutputVerifier
         }
 
         return (true, string.Empty);
+    }
+
+    // A candidate source shape matches when the output's aspect is within 15% of it. A candidate with no
+    // usable dimensions never matches, so an absent coded size cannot widen the gate by accident.
+    private static bool ShapeMatches(double outputAspect, int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+        {
+            return false;
+        }
+
+        var sourceAspect = width / (double)height;
+        return Math.Abs(outputAspect - sourceAspect) <= sourceAspect * 0.15;
     }
 }

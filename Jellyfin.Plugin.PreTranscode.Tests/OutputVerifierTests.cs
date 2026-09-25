@@ -229,4 +229,96 @@ public class OutputVerifierTests
             File.Delete(output);
         }
     }
+    // The source of issue #14: a UHD remux whose Matroska container asks for 280px off the top and bottom.
+    // ffprobe reports the coded 3840x2160 and states the crop separately, so the probe describes the
+    // displayed 3840x1600 while keeping the coded figure.
+    private static MediaProbeInfo CroppedUhdSource()
+    {
+        return new MediaProbeInfo
+        {
+            DurationSeconds = 7200,
+            VideoCodec = "hevc",
+            Width = 3840,
+            Height = 1600,
+            CodedWidth = 3840,
+            CodedHeight = 2160,
+            AudioStreams = new[] { new AudioStreamInfo { Codec = "truehd", Channels = 8 } }
+        };
+    }
+
+    [Fact]
+    public async Task ContainerCroppedSource_CroppedOutput_IsAccepted()
+    {
+        var output = NewOutputFile();
+        try
+        {
+            // ffmpeg >= 7.1 applies the container crop by itself, so a correct encode is 2.40:1. Comparing
+            // it against the uncropped 16:9 coded size discarded 3.5 hours of encoding (issue #14).
+            var (ok, reason) = await OutputVerifier.VerifyAsync(
+                new FakeProber(Video(3840, 1600)), output, CroppedUhdSource(), CancellationToken.None);
+            Assert.True(ok, reason);
+        }
+        finally
+        {
+            File.Delete(output);
+        }
+    }
+
+    [Fact]
+    public async Task ContainerCroppedSource_ScaledCroppedOutput_IsAccepted()
+    {
+        var output = NewOutputFile();
+        try
+        {
+            // The same file under "cap the longest edge at 1920": 1920x800 is the same 2.40:1 shape.
+            var (ok, reason) = await OutputVerifier.VerifyAsync(
+                new FakeProber(Video(1920, 800)), output, CroppedUhdSource(), CancellationToken.None);
+            Assert.True(ok, reason);
+        }
+        finally
+        {
+            File.Delete(output);
+        }
+    }
+
+    [Fact]
+    public async Task ContainerCroppedSource_UncroppedOutput_IsAccepted()
+    {
+        var output = NewOutputFile();
+        try
+        {
+            // An ffmpeg older than 7.1 ignores the container crop, so the output keeps the coded 16:9
+            // shape. Verifying against the displayed size alone would reject a correct encode on those
+            // servers, which is why both shapes are accepted.
+            var (ok, reason) = await OutputVerifier.VerifyAsync(
+                new FakeProber(Video(3840, 2160)), output, CroppedUhdSource(), CancellationToken.None);
+            Assert.True(ok, reason);
+        }
+        finally
+        {
+            File.Delete(output);
+        }
+    }
+
+    [Fact]
+    public async Task ContainerCroppedSource_CoverArtOutput_IsStillRejected()
+    {
+        var output = NewOutputFile();
+        try
+        {
+            // Accepting two source shapes must not open the gate this check exists for: portrait cover art
+            // standing in for the film matches neither 1.78 nor 2.40, and under Replace in place the
+            // original would be deleted for it.
+            var (ok, reason) = await OutputVerifier.VerifyAsync(
+                new FakeProber(Video(600, 900)), output, CroppedUhdSource(), CancellationToken.None);
+            Assert.False(ok);
+            Assert.Contains("shape", reason);
+            Assert.Contains("coded 3840x2160", reason);
+        }
+        finally
+        {
+            File.Delete(output);
+        }
+    }
+
 }

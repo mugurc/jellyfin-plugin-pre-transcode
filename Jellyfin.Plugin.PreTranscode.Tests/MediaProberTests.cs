@@ -180,4 +180,70 @@ public class MediaProberTests
         Assert.True(i >= 0, "ffprobe must be given a protocol whitelist");
         Assert.Equal("file,crypto,data", args[i + 1]);
     }
+    // The exact ffprobe output from issue #14: a UHD remux whose Matroska container asks for 280px off the
+    // top and bottom. width/height are the CODED size and the crop arrives as side data.
+    private const string ContainerCropJson = @"{
+        ""format"": { ""format_name"": ""matroska,webm"", ""duration"": ""7200.0"" },
+        ""streams"": [
+            { ""codec_type"": ""video"", ""codec_name"": ""hevc"", ""profile"": ""Main 10"",
+              ""width"": 3840, ""height"": 2160, ""coded_width"": 3840, ""coded_height"": 2160,
+              ""sample_aspect_ratio"": ""1:1"", ""display_aspect_ratio"": ""16:9"",
+              ""pix_fmt"": ""yuv420p10le"", ""color_transfer"": ""smpte2084"",
+              ""r_frame_rate"": ""24000/1001"",
+              ""side_data_list"": [ { ""side_data_type"": ""Frame Cropping"",
+                  ""crop_top"": 280, ""crop_bottom"": 280, ""crop_left"": 0, ""crop_right"": 0 } ] },
+            { ""codec_type"": ""audio"", ""codec_name"": ""truehd"", ""channels"": 8 }
+        ]
+    }";
+
+    // A crop that would leave no picture at all. Propagating it would describe a 3840x0 frame, so it is
+    // ignored in favour of the coded size.
+    private const string AbsurdCropJson = @"{
+        ""format"": { ""format_name"": ""matroska,webm"", ""duration"": ""60.0"" },
+        ""streams"": [
+            { ""codec_type"": ""video"", ""codec_name"": ""h264"", ""width"": 1920, ""height"": 1080,
+              ""r_frame_rate"": ""25/1"",
+              ""side_data_list"": [ { ""side_data_type"": ""Frame Cropping"",
+                  ""crop_top"": 600, ""crop_bottom"": 600, ""crop_left"": 0, ""crop_right"": 0 } ] }
+        ]
+    }";
+
+    [Fact]
+    public void ContainerCrop_IsAppliedToTheDisplayedSize()
+    {
+        var info = MediaProber.Parse(ContainerCropJson, "/media/1917.mkv");
+
+        // What the output will actually contain, and what every rule and the compliance check should judge.
+        Assert.Equal(3840, info.Width);
+        Assert.Equal(1600, info.Height);
+
+        // The raw figures are kept: an ffmpeg older than 7.1 does not apply the crop, and the verifier
+        // accepts that shape too.
+        Assert.Equal(3840, info.CodedWidth);
+        Assert.Equal(2160, info.CodedHeight);
+        Assert.True(info.HasContainerCrop);
+    }
+
+    [Fact]
+    public void NoCropMetadata_LeavesTheCodedSizeAlone()
+    {
+        var info = MediaProber.Parse(MkvJson, "/media/a.mkv");
+
+        Assert.Equal(1920, info.Width);
+        Assert.Equal(1080, info.Height);
+        Assert.Equal(1920, info.CodedWidth);
+        Assert.Equal(1080, info.CodedHeight);
+        Assert.False(info.HasContainerCrop);
+    }
+
+    [Fact]
+    public void AbsurdCrop_IsIgnored()
+    {
+        var info = MediaProber.Parse(AbsurdCropJson, "/media/a.mkv");
+
+        Assert.Equal(1920, info.Width);
+        Assert.Equal(1080, info.Height);
+        Assert.False(info.HasContainerCrop);
+    }
+
 }

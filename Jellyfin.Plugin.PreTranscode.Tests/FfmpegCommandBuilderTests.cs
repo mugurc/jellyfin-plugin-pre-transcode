@@ -699,4 +699,36 @@ public class FfmpegCommandBuilderTests
 
         Assert.Equal("videotoolbox", args[args.IndexOf("-hwaccel") + 1]);
     }
+    // Issue #14. The calculator promises it only ever downscales. A container-cropped source displays as
+    // 3840x1600, so a 1800-line cap is already satisfied — reading the coded 2160 instead emitted
+    // "scale=-2:1800" and enlarged a 1600-line picture to meet a cap it was already under.
+    [Fact]
+    public void ContainerCroppedSource_UnderTheCap_IsNotScaled()
+    {
+        var profile = BaseProfile();
+        profile.ResolutionMode = ResolutionMode.CapHeight;
+        profile.MaxHeight = 1800;
+
+        var source = Source(w: 3840, h: 1600);
+        source.CodedWidth = 3840;
+        source.CodedHeight = 2160;
+
+        Assert.DoesNotContain("scale=", Build(profile, source), System.StringComparison.Ordinal);
+    }
+
+    // The same file with the longest edge capped at 1920 must still scale, and to the cropped shape.
+    [Fact]
+    public void ContainerCroppedSource_OverTheCap_ScalesFromTheDisplayedSize()
+    {
+        var profile = BaseProfile();
+        profile.ResolutionMode = ResolutionMode.CapLongestEdge;
+        profile.MaxWidth = 1920;
+
+        var source = Source(w: 3840, h: 1600);
+        source.CodedWidth = 3840;
+        source.CodedHeight = 2160;
+
+        Assert.Contains("scale=1920:-2", Build(profile, source), System.StringComparison.Ordinal);
+    }
+
 }

@@ -171,8 +171,11 @@ internal sealed partial class MediaProber : IMediaProber
                 {
                     videoFound = true;
                     info.VideoCodec = GetString(stream, "codec_name");
-                    info.Width = (int)GetDouble(stream, "width");
-                    info.Height = (int)GetDouble(stream, "height");
+                    info.CodedWidth = (int)GetDouble(stream, "width");
+                    info.CodedHeight = (int)GetDouble(stream, "height");
+                    var (displayWidth, displayHeight) = ApplyContainerCrop(stream, info.CodedWidth, info.CodedHeight);
+                    info.Width = displayWidth;
+                    info.Height = displayHeight;
                     info.PixelFormat = GetString(stream, "pix_fmt");
                     info.BitDepth = ReadBitDepth(stream, info.PixelFormat);
                     videoStreamBitrate = GetDouble(stream, "bit_rate");
@@ -368,6 +371,54 @@ internal sealed partial class MediaProber : IMediaProber
         }
 
         return false;
+    }
+
+    // Matroska can ask for a crop in the container rather than the bitstream (the PixelCrop* elements,
+    // which ffprobe reports as "Frame Cropping" side data). ffprobe keeps width/height at the CODED size
+    // and states the crop separately, while ffmpeg from 7.1 onwards applies it by default
+    // (-apply_cropping), so the encode produces the cropped picture. Reading width/height at face value
+    // therefore describes a frame the output will not contain: a 3840x2160 UHD remux with 280px cropped
+    // top and bottom encodes to 3840x1600, and an output verifier comparing shapes rejected the correct
+    // result after hours of encoding (issue #14).
+    private static (int Width, int Height) ApplyContainerCrop(JsonElement stream, int codedWidth, int codedHeight)
+    {
+        if (codedWidth <= 0 || codedHeight <= 0
+            || !stream.TryGetProperty("side_data_list", out var sideData)
+            || sideData.ValueKind != JsonValueKind.Array)
+        {
+            return (codedWidth, codedHeight);
+        }
+
+        foreach (var entry in sideData.EnumerateArray())
+        {
+            if (!GetString(entry, "side_data_type").Contains("crop", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var top = (int)GetDouble(entry, "crop_top");
+            var bottom = (int)GetDouble(entry, "crop_bottom");
+            var left = (int)GetDouble(entry, "crop_left");
+            var right = (int)GetDouble(entry, "crop_right");
+
+            // A negative or oversized crop is not something to reason about: it would describe a frame
+            // with no picture in it. Treat a nonsensical entry as no crop rather than propagating it.
+            if (top < 0 || bottom < 0 || left < 0 || right < 0)
+            {
+                continue;
+            }
+
+            var width = codedWidth - left - right;
+            var height = codedHeight - top - bottom;
+            if (width <= 0 || height <= 0)
+            {
+                continue;
+            }
+
+            return (width, height);
+        }
+
+        return (codedWidth, codedHeight);
     }
 
     private static string GetLanguage(JsonElement stream)

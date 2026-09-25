@@ -246,4 +246,21 @@ public class ProfileComplianceCheckerTests
 
         Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(Profile(), info, Presets));
     }
+    // Issue #14. A UHD remux whose container crops 280px off the top and bottom displays as 3840x1600, and
+    // that is the picture the encode produces. Judging "already under a 1800-line cap" by the coded 2160
+    // queues a file that needed nothing doing to it.
+    [Fact]
+    public void ContainerCroppedSource_UnderTheCap_IsCompliant()
+    {
+        var profile = Profile();
+        profile.ResolutionMode = ResolutionMode.CapHeight;
+        profile.MaxHeight = 1800;
+
+        var info = Info(vc: "h264", w: 3840, h: 1600);
+        info.CodedWidth = 3840;
+        info.CodedHeight = 2160;
+
+        Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(profile, info, Presets));
+    }
+
 }

@@ -35,14 +35,47 @@ public class MediaProbeInfo
     public string VideoCodec { get; set; } = string.Empty;
 
     /// <summary>
-    /// Gets or sets the video width in pixels.
+    /// Gets or sets the video width in pixels as it is <b>displayed</b> — the coded width less any
+    /// container crop. Equal to <see cref="CodedWidth"/> for the overwhelming majority of files.
     /// </summary>
+    /// <remarks>
+    /// This is deliberately the displayed size rather than the coded one, because every consumer here
+    /// (rule conditions, the compliance check, the scale filter) is reasoning about the picture a viewer
+    /// ends up with, and ffmpeg applies container cropping by itself from 7.1 onwards. A Matroska file
+    /// carrying <c>PixelCrop*</c> elements reports the uncropped size in ffprobe's <c>width</c>/
+    /// <c>height</c> and the crop separately as side data, so taking those fields at face value describes
+    /// a frame that will not exist in the output. See <see cref="CodedWidth"/> for the raw figure.
+    /// </remarks>
     public int Width { get; set; }
 
     /// <summary>
-    /// Gets or sets the video height in pixels.
+    /// Gets or sets the video height in pixels as it is <b>displayed</b> — the coded height less any
+    /// container crop. Equal to <see cref="CodedHeight"/> for the overwhelming majority of files.
     /// </summary>
     public int Height { get; set; }
+
+    /// <summary>
+    /// Gets or sets the coded video width in pixels, exactly as ffprobe reported it, before any
+    /// container crop is applied. Equal to <see cref="Width"/> unless the container carries a crop.
+    /// </summary>
+    public int CodedWidth { get; set; }
+
+    /// <summary>
+    /// Gets or sets the coded video height in pixels, exactly as ffprobe reported it, before any
+    /// container crop is applied. Equal to <see cref="Height"/> unless the container carries a crop.
+    /// </summary>
+    /// <remarks>
+    /// Kept because an ffmpeg older than 7.1 does <b>not</b> apply container cropping, so an output
+    /// verified against the displayed size alone would be rejected on those servers. The verifier
+    /// accepts either shape for that reason.
+    /// </remarks>
+    public int CodedHeight { get; set; }
+
+    /// <summary>
+    /// Gets a value indicating whether the container carries a crop, i.e. the displayed size differs
+    /// from the coded size.
+    /// </summary>
+    public bool HasContainerCrop => CodedWidth != Width || CodedHeight != Height;
 
     /// <summary>
     /// Gets or sets the video bitrate in kbps (0 when unknown — e.g. Matroska stores no per-stream
