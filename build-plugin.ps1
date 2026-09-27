@@ -16,7 +16,7 @@ $guid = "8da245f6-7244-449b-9f32-46043f34b5f0"
 $proj = Join-Path $root "Jellyfin.Plugin.PreTranscode\Jellyfin.Plugin.PreTranscode.csproj"
 $artifacts = Join-Path $root "artifacts"
 $stage = Join-Path $artifacts "Pre-Transcode_$Version"
-$dll = Join-Path $root "Jellyfin.Plugin.PreTranscode\bin\Release\net9.0\Jellyfin.Plugin.PreTranscode.dll"
+$dll = Join-Path $root "Jellyfin.Plugin.PreTranscode\bin\Release\net10.0\Jellyfin.Plugin.PreTranscode.dll"
 
 Write-Host "Building $Version..." -ForegroundColor Cyan
 dotnet build $proj -c Release -p:Version=$Version -p:AssemblyVersion=$Version -p:FileVersion=$Version

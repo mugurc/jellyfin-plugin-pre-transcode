@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -95,11 +94,10 @@ internal sealed class AlternateVersionMerger : IDisposable
                 // For a MOVIE the output filename ("<movie folder> - <label>.<ext>") already matches
                 // Jellyfin's own multi-version convention, so the scanner has grouped the two files as
                 // *local* alternate versions before this ever runs. Adding the database link on top makes
-                // Jellyfin count the same file twice: Video.GetAllItemsForMediaSources concatenates
-                // GetLinkedAlternateVersions() and GetLocalAlternateVersionIds() and, on 10.11, does not
-                // de-duplicate them (the DistinctBy exists only on later builds) — so the version picker
-                // lists the transcode twice. The database link is only needed where the naming convention
-                // does nothing, i.e. TV episodes.
+                // Jellyfin count the same file twice: Video.GetAllItemsForMediaSources concatenates the
+                // linked and the local alternate versions, and on 10.11 does not de-duplicate them — so
+                // the version picker lists the transcode twice. The database link is only needed where
+                // the naming convention does nothing, i.e. TV episodes.
                 if (IsAlreadyLocalVersion(primary, alternate))
                 {
                     _logger.LogInformation(
@@ -147,10 +145,10 @@ internal sealed class AlternateVersionMerger : IDisposable
     /// convention. Compared by id where possible and by path as a fallback, since a freshly-indexed
     /// item's local-version ids are resolved lazily.
     /// </summary>
-    private static bool IsAlreadyLocalVersion(Video primary, Video alternate)
+    private bool IsAlreadyLocalVersion(Video primary, Video alternate)
     {
         return IsAlreadyLocalVersion(
-            primary.GetLocalAlternateVersionIds(),
+            _libraryManager.GetLocalAlternateVersionIds(primary),
             primary.LocalAlternateVersions,
             alternate.Id,
             alternate.Path);
@@ -191,21 +189,27 @@ internal sealed class AlternateVersionMerger : IDisposable
     }
 
     // Mirrors the dashboard's MergeVersions logic, but with the source pinned as the primary version.
+    //
+    // A link is identified by its item id. Jellyfin 12 made LinkedChild.Path obsolete in favour of
+    // ItemId, so the de-duplication that used to compare paths case-insensitively now compares ids —
+    // which is the stronger check anyway, since two paths can name the same item. An id-less link (one
+    // written by an older server, carrying only a path) cannot be compared this way, so it is carried
+    // over untouched rather than dropped or wrongly treated as a duplicate of another id-less link.
     private static void MergeInto(Video primary, Video alternate)
     {
         var alternates = primary.LinkedAlternateVersions.ToList();
 
-        alternate.SetPrimaryVersionId(primary.Id.ToString("N", CultureInfo.InvariantCulture));
+        alternate.SetPrimaryVersionId(primary.Id);
 
-        if (!alternates.Any(l => string.Equals(l.Path, alternate.Path, StringComparison.OrdinalIgnoreCase)))
+        if (!alternates.Any(l => l.ItemId == alternate.Id))
         {
-            alternates.Add(new LinkedChild { Path = alternate.Path, ItemId = alternate.Id });
+            alternates.Add(LinkedChild.Create(alternate));
         }
 
         // Absorb any alternates the output item itself carried (normally none), then clear its own list.
         foreach (var linked in alternate.LinkedAlternateVersions)
         {
-            if (!alternates.Any(l => string.Equals(l.Path, linked.Path, StringComparison.OrdinalIgnoreCase)))
+            if (linked.ItemId is null || !alternates.Any(l => l.ItemId == linked.ItemId))
             {
                 alternates.Add(linked);
             }

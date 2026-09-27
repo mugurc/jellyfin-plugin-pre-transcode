@@ -25,7 +25,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 9.0.x
+          dotnet-version: 10.0.x
 
       - name: Restore
         run: dotnet restore
@@ -51,5 +51,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Jellyfin.Plugin.PreTranscode
-          path: Jellyfin.Plugin.PreTranscode/bin/Release/net9.0/Jellyfin.Plugin.PreTranscode.dll
+          path: Jellyfin.Plugin.PreTranscode/bin/Release/net10.0/Jellyfin.Plugin.PreTranscode.dll
           if-no-files-found: error

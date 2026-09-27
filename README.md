@@ -2,8 +2,8 @@
 
 [![Release](https://img.shields.io/github/v/release/mugurc/jellyfin-plugin-pre-transcode?style=flat-square&color=00A4DC&label=release)](https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/mugurc/jellyfin-plugin-pre-transcode/total?style=flat-square&color=00A4DC&label=downloads)](https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases)
-[![Jellyfin](https://img.shields.io/badge/Jellyfin-10.11-00A4DC?style=flat-square&logo=jellyfin&logoColor=white)](https://jellyfin.org)
-[![.NET](https://img.shields.io/badge/.NET-9.0-512BD4?style=flat-square&logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
+[![Jellyfin](https://img.shields.io/badge/Jellyfin-12.x-00A4DC?style=flat-square&logo=jellyfin&logoColor=white)](https://jellyfin.org)
+[![.NET](https://img.shields.io/badge/.NET-10.0-512BD4?style=flat-square&logo=dotnet&logoColor=white)](https://dotnet.microsoft.com)
 [![License](https://img.shields.io/badge/license-GPLv3-blue?style=flat-square)](LICENSE)
 
 **Transcode it once, in the background, instead of every time somebody presses play.**
@@ -120,7 +120,9 @@ no extra containers, library-aware rules, and everything configured from the Jel
 
 ## Requirements
 
-- Jellyfin **10.11.x** (this build targets `net9.0` / `targetAbi 10.11.0.0`).
+- Jellyfin **12.x** (this build targets `net10.0` / `targetAbi 12.0.0.0`). Built against the 12.0
+  packages, so it installs on 12.0 as well as 12.1. **Still on 10.11?** Use the 0.10.x line, which
+  stays in the manifest and remains installable — a 12.x build cannot load on 10.11 and vice versa.
 - An `ffmpeg`/`ffprobe` binary available to the server. The official and linuxserver.io images
   bundle `jellyfin-ffmpeg`; the plugin uses the encoder path Jellyfin is configured with (and
   derives `ffprobe` from it when the server doesn't report one).
@@ -259,7 +261,7 @@ dotnet test   --configuration Release   # unit + integration tests
 ```
 
 The plugin DLL is produced at
-`Jellyfin.Plugin.PreTranscode/bin/Release/net9.0/Jellyfin.Plugin.PreTranscode.dll`.
+`Jellyfin.Plugin.PreTranscode/bin/Release/net10.0/Jellyfin.Plugin.PreTranscode.dll`.
 
 To produce an installable, checksummed zip (and the catalog manifest entry), run:
 

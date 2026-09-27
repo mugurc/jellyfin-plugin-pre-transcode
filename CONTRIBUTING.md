@@ -46,9 +46,9 @@ Small, self-evident fixes (a typo, an obviously wrong string, a broken link) can
 
 ## Development setup
 
-Requires the **.NET 9 SDK** (`global.json` pins major version 9 with `rollForward: latestMajor`).
+Requires the **.NET 10 SDK** (`global.json` pins major version 10 with `rollForward: latestMajor`).
 No Jellyfin checkout is needed: the server API comes from the `Jellyfin.Controller` /
-`Jellyfin.Model` NuGet packages, pinned to the ABI the plugin targets (**10.11.x**).
+`Jellyfin.Model` NuGet packages, pinned to the ABI the plugin targets (**12.0.x**).
 
 ```bash
 git clone https://github.com/<you>/jellyfin-plugin-pre-transcode.git
@@ -59,7 +59,7 @@ dotnet test  --configuration Release      # unit + integration tests
 ```
 
 The plugin DLL lands at
-`Jellyfin.Plugin.PreTranscode/bin/Release/net9.0/Jellyfin.Plugin.PreTranscode.dll`.
+`Jellyfin.Plugin.PreTranscode/bin/Release/net10.0/Jellyfin.Plugin.PreTranscode.dll`.
 
 CI (`.github/workflows/build.yaml`) runs exactly those two commands on every push and pull request,
 so a PR that does not build or test cleanly locally will not pass there either.
