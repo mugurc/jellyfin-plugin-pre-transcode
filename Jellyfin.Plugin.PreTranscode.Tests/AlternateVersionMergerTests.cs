@@ -153,4 +153,33 @@ public class AlternateVersionMergerTests
         Assert.Equal(Other, primary.LinkedAlternateVersions[0].ItemId);
     }
 
+    // Issue #15. On Jellyfin 12 the scanner folds "<source> - <label>.<ext>" into the source as a version,
+    // so the output never appears as an item of its own. The merge now stops as soon as the source offers
+    // the output among its versions instead of waiting five minutes for an item that will not exist.
+    [Fact]
+    public void SourceListingTheOutput_MeansTheGroupingIsDone()
+    {
+        Assert.True(AlternateVersionMerger.ListsPath(
+            new[] { "/tv/Show/Season 01/Show - S01E01.mkv", "/tv/Show/Season 01/Show - S01E01 - Pre-Transcode.mp4" },
+            "/tv/Show/Season 01/Show - S01E01 - Pre-Transcode.mp4"));
+    }
+
+    [Fact]
+    public void SourceListingOnlyItself_StillWaits()
+    {
+        // Right after the encode, before the scanner has seen the new file, the source's only version is
+        // itself. That must not be mistaken for the grouping being in place.
+        Assert.False(AlternateVersionMerger.ListsPath(
+            new[] { "/m/Movie (2026)/Movie (2026).mkv" },
+            "/m/Movie (2026)/Movie (2026) - Pre-Transcode.mp4"));
+    }
+
+    [Fact]
+    public void VersionPathComparison_IgnoresCaseAndSkipsMissingPaths()
+    {
+        Assert.True(AlternateVersionMerger.ListsPath(
+            new string?[] { null, "/M/MOVIE (2026)/MOVIE (2026) - PRE-TRANSCODE.MP4" },
+            "/m/Movie (2026)/Movie (2026) - Pre-Transcode.mp4"));
+    }
+
 }

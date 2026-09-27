@@ -59,7 +59,16 @@ internal sealed class AlternateVersionMerger : IDisposable
             // single lock across this up-to-5-minute poll would serialize every completed episode behind
             // one slow index — a large overnight backlog of parked, uncancellable tasks each stalling the
             // next. Only the DB link write below needs to run strictly one at a time.
-            var indexed = await WaitForOutputItemAsync(outputPath, cancellationToken).ConfigureAwait(false);
+            var (indexed, alreadyGrouped) = await WaitForOutputItemAsync(sourcePath, outputPath, cancellationToken).ConfigureAwait(false);
+            if (alreadyGrouped)
+            {
+                _logger.LogInformation(
+                    "Auto-merge not needed for {Output}: Jellyfin already lists it as a version of {Source}",
+                    outputPath,
+                    sourcePath);
+                return;
+            }
+
             if (indexed is null)
             {
                 _logger.LogWarning(
@@ -219,23 +228,66 @@ internal sealed class AlternateVersionMerger : IDisposable
         primary.LinkedAlternateVersions = alternates.ToArray();
     }
 
-    private async Task<Video?> WaitForOutputItemAsync(string outputPath, CancellationToken cancellationToken)
+    private async Task<(Video? Indexed, bool AlreadyGrouped)> WaitForOutputItemAsync(
+        string sourcePath,
+        string outputPath,
+        CancellationToken cancellationToken)
     {
         // Just wait for the file to be indexed; do NOT force a library scan. Jellyfin already rescans
         // when a file is added, and forcing an extra full scan per completed episode is precisely what
         // re-indexed the fresh file concurrently with the merge and clobbered the link (leaving a
         // duplicate episode) — besides being very expensive on a large library. If realtime monitoring is
         // off and the file is never indexed, the merge is simply skipped and can be done manually.
+        //
+        // On Jellyfin 12 the output usually never appears as an item of its own at all. The scanner
+        // recognises "<source> - <label>.<ext>" as a version of the source — for episodes as well as
+        // movies — and folds it in, so the file is offered through the source's version selector while
+        // FindByPath keeps returning nothing. Waiting for an item that will never exist cost five minutes
+        // per job and ended in a warning telling the admin to merge by hand something that was already
+        // merged (issue #15). Each poll therefore also asks whether the source already offers the output
+        // as a version, which is the outcome this whole class exists to produce.
         for (var waited = TimeSpan.Zero; waited < FindTimeout; waited += PollInterval)
         {
+            if (SourceAlreadyOffersOutput(sourcePath, outputPath))
+            {
+                return (null, true);
+            }
+
             if (_libraryManager.FindByPath(outputPath, false) is Video found)
             {
-                return found;
+                return (found, false);
             }
 
             await Task.Delay(PollInterval, cancellationToken).ConfigureAwait(false);
         }
 
-        return null;
+        return (null, false);
+    }
+
+    // GetAllVersions is what the server builds the version selector from: the source itself, its linked
+    // alternates and its local (filename-grouped) ones, de-duplicated. If the output is among them, the
+    // user already sees one item with two versions and there is nothing left for a merge to do.
+    private bool SourceAlreadyOffersOutput(string sourcePath, string outputPath)
+    {
+        if (_libraryManager.FindByPath(sourcePath, false) is not Video source)
+        {
+            return false;
+        }
+
+        return ListsPath(source.GetAllVersions().Select(v => v.Path), outputPath);
+    }
+
+    // The decision over plain values, so it is testable without a running library manager.
+    internal static bool ListsPath(IEnumerable<string?> versionPaths, string outputPath)
+    {
+        foreach (var path in versionPaths)
+        {
+            if (string.Equals(path, outputPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
