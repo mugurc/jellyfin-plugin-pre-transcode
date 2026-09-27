@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Jellyfin.Plugin.PreTranscode.Library;
+using MediaBrowser.Controller.Entities;
 
 namespace Jellyfin.Plugin.PreTranscode.Tests;
 
@@ -65,4 +67,90 @@ public class AlternateVersionMergerTests
         Assert.False(AlternateVersionMerger.IsAlreadyLocalVersion(
             null, new List<string> { "/m/Movie - PT.mkv" }, Alt, null));
     }
+    // These exercise MergeInto against real Jellyfin entities rather than plain values, which is the
+    // point: Jellyfin 12 moved this API (SetPrimaryVersionId now takes a Guid?, LinkedChild.Path gave way
+    // to ItemId, and LinkedChild.Create is the intended factory). A signature that did not line up would
+    // fail here at run time, not only at compile time — and the live-server route cannot reach this code,
+    // because the scanner groups the companion file by name before the merge is ever attempted.
+    private static Video VideoWithId(Guid id) => new Video { Id = id };
+
+    [Fact]
+    public void MergeInto_PinsTheSourceAsPrimaryAndLinksTheOutput()
+    {
+        var primary = VideoWithId(Alt);
+        var alternate = VideoWithId(Other);
+
+        AlternateVersionMerger.MergeInto(primary, alternate);
+
+        // The source stays the primary version; the transcode points at it.
+        Assert.Equal(Alt, alternate.PrimaryVersionId);
+
+        var links = primary.LinkedAlternateVersions;
+        Assert.Single(links);
+        Assert.Equal(Other, links[0].ItemId);
+
+        // The output must not keep a list of its own, or Jellyfin walks a chain of versions.
+        Assert.Empty(alternate.LinkedAlternateVersions);
+    }
+
+    [Fact]
+    public void MergeInto_RunTwice_DoesNotDuplicateTheLink()
+    {
+        var primary = VideoWithId(Alt);
+        var alternate = VideoWithId(Other);
+
+        AlternateVersionMerger.MergeInto(primary, alternate);
+        AlternateVersionMerger.MergeInto(primary, alternate);
+
+        // A re-queued job merging the same pair again used to be a real occurrence.
+        Assert.Single(primary.LinkedAlternateVersions);
+    }
+
+    [Fact]
+    public void MergeInto_AbsorbsLinksTheOutputCarried()
+    {
+        var third = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        var primary = VideoWithId(Alt);
+        var alternate = VideoWithId(Other);
+        alternate.LinkedAlternateVersions = new[] { new LinkedChild { ItemId = third } };
+
+        AlternateVersionMerger.MergeInto(primary, alternate);
+
+        var ids = primary.LinkedAlternateVersions.Select(l => l.ItemId).ToList();
+        Assert.Contains(Other, ids);
+        Assert.Contains(third, ids);
+        Assert.Empty(alternate.LinkedAlternateVersions);
+    }
+
+    [Fact]
+    public void MergeInto_KeepsEveryIdlessLegacyLink()
+    {
+        // Links written by an older server carry a path and no id. Comparing them by id would make every
+        // one of them look like a duplicate of the others (null == null), silently dropping versions a
+        // user had merged by hand. They are carried over untouched instead.
+        var primary = VideoWithId(Alt);
+        primary.LinkedAlternateVersions = Array.Empty<LinkedChild>();
+        var alternate = VideoWithId(Other);
+        alternate.LinkedAlternateVersions = new[] { new LinkedChild(), new LinkedChild() };
+
+        AlternateVersionMerger.MergeInto(primary, alternate);
+
+        // The output's own link plus both id-less ones.
+        Assert.Equal(3, primary.LinkedAlternateVersions.Length);
+        Assert.Equal(2, primary.LinkedAlternateVersions.Count(l => l.ItemId is null));
+    }
+
+    [Fact]
+    public void MergeInto_LeavesAnExistingLinkToTheSameOutputAlone()
+    {
+        var primary = VideoWithId(Alt);
+        primary.LinkedAlternateVersions = new[] { new LinkedChild { ItemId = Other } };
+        var alternate = VideoWithId(Other);
+
+        AlternateVersionMerger.MergeInto(primary, alternate);
+
+        Assert.Single(primary.LinkedAlternateVersions);
+        Assert.Equal(Other, primary.LinkedAlternateVersions[0].ItemId);
+    }
+
 }

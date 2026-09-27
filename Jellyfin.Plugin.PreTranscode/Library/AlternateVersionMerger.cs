@@ -195,7 +195,7 @@ internal sealed class AlternateVersionMerger : IDisposable
     // which is the stronger check anyway, since two paths can name the same item. An id-less link (one
     // written by an older server, carrying only a path) cannot be compared this way, so it is carried
     // over untouched rather than dropped or wrongly treated as a duplicate of another id-less link.
-    private static void MergeInto(Video primary, Video alternate)
+    internal static void MergeInto(Video primary, Video alternate)
     {
         var alternates = primary.LinkedAlternateVersions.ToList();
 
