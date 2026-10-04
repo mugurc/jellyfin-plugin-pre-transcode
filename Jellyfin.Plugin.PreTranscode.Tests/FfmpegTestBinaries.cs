@@ -21,6 +21,9 @@ internal static class FfmpegTestBinaries
     /// </summary>
     /// <param name="name">The binary name, without extension.</param>
     /// <returns>The full path, or <c>null</c>.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when <c>PRETRANSCODE_REQUIRE_FFMPEG</c> is set but the binary cannot be found.
+    /// </exception>
     public static string? Find(string name)
     {
         var exe = OperatingSystem.IsWindows() ? name + ".exe" : name;
@@ -57,6 +60,13 @@ internal static class FfmpegTestBinaries
             {
                 // A malformed PATH entry (illegal characters) is not worth failing a test lookup over.
             }
+        }
+
+        // CI sets this so that a runner that lost its ffmpeg fails loudly instead of reporting a pass for tests that never ran.
+        var requireFfmpeg = Environment.GetEnvironmentVariable("PRETRANSCODE_REQUIRE_FFMPEG");
+        if (!string.IsNullOrWhiteSpace(requireFfmpeg))
+        {
+            throw new InvalidOperationException($"Could not find {name} in any of the well-known locations or on PATH, and PRETRANSCODE_REQUIRE_FFMPEG is set.");
         }
 
         return null;
