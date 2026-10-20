@@ -67,8 +67,17 @@ public class ProcessSuspenderIntegrationTests
             Assert.True(s2 - s1 < 200_000, $"output kept growing while suspended ({s1} -> {s2})");
 
             ProcessSuspender.Resume(process);
-            await Task.Delay(2000);
-            var s3 = Size(outPath);
+
+            // Waited for rather than sampled after a fixed two seconds: the output grows in whole buffered
+            // blocks (it stood at exactly 3.5 MiB when this failed), and on a two-core CI runner busy with
+            // the other integration suites the next block can take longer than that to arrive.
+            var s3 = s2;
+            for (var i = 0; i < 60 && s3 - s2 <= 200_000; i++)
+            {
+                await Task.Delay(250);
+                s3 = Size(outPath);
+            }
+
             Assert.True(s3 - s2 > 200_000, $"output did not resume growing after resume ({s2} -> {s3})");
         }
         finally
