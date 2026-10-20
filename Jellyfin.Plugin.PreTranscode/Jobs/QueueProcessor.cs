@@ -20,6 +20,9 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
     private const int DrainTimeoutMs = 30000;
     private const int DrainPollMs = 200;
 
+    // How often the loop looks again for the ffmpeg path Jellyfin has not set yet.
+    private const int FfmpegPathPollMs = 500;
+
     private readonly IJobQueue _queue;
     private readonly TranscodeExecutor _executor;
     private readonly ILogger<QueueProcessor> _logger;
@@ -33,6 +36,9 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
     // suspend idempotent.
     private readonly HashSet<string> _suspended = new();
     private readonly object _suspendLock = new();
+
+    // Serialises saving the paused flag; see PersistPaused. Always taken BEFORE _suspendLock.
+    private readonly object _persistLock = new();
 
     // Ids of jobs cancelled in the narrow window after they were claimed (marked Processing) but before
     // StartJob registered their CTS in _active. StartJob drains this the moment it registers, so a cancel
@@ -55,6 +61,12 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
         _executor = executor;
         _logger = logger;
     }
+
+    /// <summary>
+    /// Gets or sets how long the loop waits for Jellyfin to report its ffmpeg path before it starts
+    /// claiming jobs anyway. See <see cref="WaitForFfmpegPathAsync"/>.
+    /// </summary>
+    internal TimeSpan FfmpegPathTimeout { get; set; } = TimeSpan.FromMinutes(2);
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -252,7 +264,7 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
             ApplyHold();
         }
 
-        PersistPaused(true);
+        PersistPaused();
     }
 
     public void Resume()
@@ -271,7 +283,7 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
             ApplyHold();
         }
 
-        PersistPaused(false);
+        PersistPaused();
     }
 
     // Folds the wall-clock verdict into the hold state and reports whether work is held and whether this
@@ -320,15 +332,30 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
 
     // Best-effort: the in-memory flag is what actually gates the loop, so a config write that fails must
     // not turn Pause into an exception the API surfaces as a 500 — it only costs the state on restart.
-    private void PersistPaused(bool paused)
+    //
+    // Saves the live flag, read under the lock that guards it, rather than the value the caller just set:
+    // a Pause and a Resume racing (two tabs, a double click) could otherwise each save their own value
+    // after the other had changed the live one, leaving QueuePaused=true on disk under a running queue —
+    // which then came back paused after the next restart. _persistLock keeps one caller's read-and-save
+    // from interleaving with another's, so the last save always carries the last change.
+    private void PersistPaused()
     {
         try
         {
-            var plugin = Plugin.Instance;
-            if (plugin is not null && plugin.Configuration.QueuePaused != paused)
+            lock (_persistLock)
             {
-                plugin.Configuration.QueuePaused = paused;
-                plugin.SaveConfiguration();
+                bool paused;
+                lock (_suspendLock)
+                {
+                    paused = _queue.IsPaused;
+                }
+
+                var plugin = Plugin.Instance;
+                if (plugin is not null && plugin.Configuration.QueuePaused != paused)
+                {
+                    plugin.Configuration.QueuePaused = paused;
+                    plugin.SaveConfiguration();
+                }
             }
         }
         catch (Exception ex)
@@ -346,8 +373,45 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
         }
     }
 
+    /// <summary>
+    /// Waits, bounded, until Jellyfin has reported where its ffmpeg is.
+    /// <para>
+    /// Jellyfin sets the path during its startup tasks, a few seconds after hosted services — this loop
+    /// among them — have started. A job left Pending across a restart used to be claimed in that gap and
+    /// probed and encoded with whatever "ffmpeg" is on PATH: on Docker and Debian, where jellyfin-ffmpeg
+    /// is not on PATH, that failed it with "could not probe source file", and elsewhere it encoded with a
+    /// different build than the one configured. A server that never reports a path (ffmpeg not found) still
+    /// gets the PATH fallback, just not before the wait runs out.
+    /// </para>
+    /// </summary>
+    private async Task WaitForFfmpegPathAsync(CancellationToken stopToken)
+    {
+        var waited = Stopwatch.StartNew();
+        while (!_executor.FfmpegPathKnown)
+        {
+            if (waited.Elapsed >= FfmpegPathTimeout)
+            {
+                _logger.LogWarning(
+                    "Jellyfin has not reported its ffmpeg path after {Seconds} s; Pre-Transcode will use the ffmpeg and ffprobe found on PATH",
+                    (int)FfmpegPathTimeout.TotalSeconds);
+                return;
+            }
+
+            await Task.Delay(FfmpegPathPollMs, stopToken).ConfigureAwait(false);
+        }
+    }
+
     private async Task RunLoopAsync(CancellationToken stopToken)
     {
+        try
+        {
+            await WaitForFfmpegPathAsync(stopToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
         while (!stopToken.IsCancellationRequested)
         {
             try
@@ -424,6 +488,7 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
         _ = Task.Run(
             async () =>
             {
+                Process? ownProcess = null;
                 try
                 {
                     await _executor.ExecuteAsync(
@@ -431,6 +496,7 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
                         jobCts.Token,
                         process =>
                         {
+                            ownProcess = process;
                             _activeProcesses[job.Id] = process;
 
                             // Close the race where the queue was paused between claiming this job and the
@@ -463,17 +529,28 @@ internal sealed class QueueProcessor : IHostedService, IQueueController, IDispos
                     }
 
                     Interlocked.Decrement(ref _inFlight);
-                    _activeProcesses.TryRemove(job.Id, out _);
-                    _cancelRequested.TryRemove(job.Id, out _);
+
+                    // Only this run's own entries are removed. The executor records the final state before
+                    // this runs, so an admin can requeue the job and the loop re-claim it in between; the
+                    // new run registers under the same id, and removing by id alone disposed ITS token and
+                    // forgot ITS ffmpeg — CancelJob then reported success and stopped nothing, StopAsync
+                    // could not reach it, and a paused encode stayed frozen through every Resume.
                     lock (_suspendLock)
                     {
-                        _suspended.Remove(job.Id);
+                        if (ownProcess is not null && _activeProcesses.TryRemove(KeyValuePair.Create(job.Id, ownProcess)))
+                        {
+                            _suspended.Remove(job.Id);
+                        }
                     }
 
-                    if (_active.TryRemove(job.Id, out var removed))
+                    // A cancel request left over for this id belongs to this run unless a newer one has
+                    // registered since, in which case that run has already drained it.
+                    if (_active.TryRemove(KeyValuePair.Create(job.Id, jobCts)))
                     {
-                        removed.Dispose();
+                        _cancelRequested.TryRemove(job.Id, out _);
                     }
+
+                    jobCts.Dispose();
                 }
             },
             CancellationToken.None);

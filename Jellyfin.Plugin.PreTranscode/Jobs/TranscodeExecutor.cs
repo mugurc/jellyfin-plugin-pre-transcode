@@ -53,6 +53,18 @@ internal sealed class TranscodeExecutor
     }
 
     /// <summary>
+    /// Gets or sets how long a job whose ffmpeg or ffprobe was killed by a signal waits for the server
+    /// to stop before the death is treated as a failure. See <see cref="WaitOutInterruptionAsync"/>.
+    /// </summary>
+    internal TimeSpan InterruptionGrace { get; set; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// Gets a value indicating whether Jellyfin has told us where its ffmpeg is. Until it has,
+    /// <see cref="FfmpegPaths"/> can only fall back to whatever "ffmpeg" is on PATH.
+    /// </summary>
+    internal bool FfmpegPathKnown => !string.IsNullOrWhiteSpace(_mediaEncoder.EncoderPath);
+
+    /// <summary>
     /// Deletes whatever is left in the plugin's temp directory. Called once at startup, when by
     /// definition nothing is encoding, so everything there is debris.
     /// <para>
@@ -116,7 +128,12 @@ internal sealed class TranscodeExecutor
             var profile = ResolveProfile(config, job.ProfileId);
             if (profile is null)
             {
-                Fail(job, "no encoding profile is configured");
+                Fail(
+                    job,
+                    string.IsNullOrWhiteSpace(job.ProfileId)
+                        ? "no encoding profile is configured"
+                        : "the encoding profile this job was queued with (id " + job.ProfileId + ") no longer exists; "
+                            + "queue the item again to use one of the current profiles");
                 return;
             }
 
@@ -155,12 +172,12 @@ internal sealed class TranscodeExecutor
                 && !OutputApplier.IsSameFile(expectedOutput, job.SourcePath)
                 && File.Exists(expectedOutput))
             {
-                job.Status = JobStatus.Skipped;
-                job.StatusDetail = "output already exists";
-                job.OutputPath = expectedOutput;
-                job.Progress = 100;
-                job.FinishedUtc = DateTime.UtcNow;
-                _queue.Update(job);
+                Finish(job, JobStatus.Skipped, j =>
+                {
+                    j.StatusDetail = "output already exists";
+                    j.OutputPath = expectedOutput;
+                    j.Progress = 100;
+                });
                 _logger.LogInformation("Skipped {Path}: output already exists at {Output}", job.SourcePath, expectedOutput);
                 return;
             }
@@ -176,7 +193,19 @@ internal sealed class TranscodeExecutor
             }
 
             SetDetail(job, "probing");
-            var probe = await _prober.ProbeAsync(job.SourcePath, cancellationToken).ConfigureAwait(false);
+
+            // What the source looked like when the encode began; compared again before the result is used.
+            var sourceAtStart = SourceFingerprint.Of(job.SourcePath);
+            MediaProbeInfo? probe;
+            using (var signals = ProcessRunner.WatchSignals())
+            {
+                probe = await _prober.ProbeAsync(job.SourcePath, cancellationToken).ConfigureAwait(false);
+                if (probe is null)
+                {
+                    await WaitOutInterruptionAsync(job, "ffprobe", signals.Signal, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
             if (probe is null)
             {
                 Fail(job, "could not probe source file");
@@ -190,12 +219,12 @@ internal sealed class TranscodeExecutor
             // also the only compliance gate it sees.
             if (ProfileComplianceChecker.ShouldSkipAsCompliant(profile, probe, config.ResolutionPresets))
             {
-                job.Status = JobStatus.Skipped;
-                job.StatusDetail = "already compliant — size/bitrate are not compared; "
-                    + "turn off “Skip files already matching this profile” to encode it anyway";
-                job.Progress = 100;
-                job.FinishedUtc = DateTime.UtcNow;
-                _queue.Update(job);
+                Finish(job, JobStatus.Skipped, j =>
+                {
+                    j.StatusDetail = "already compliant — size/bitrate are not compared; "
+                        + "turn off “Skip files already matching this profile” to encode it anyway";
+                    j.Progress = 100;
+                });
                 _logger.LogInformation("Skipped {Path}: already compliant with profile {Profile}", job.SourcePath, profile.Name);
                 return;
             }
@@ -238,18 +267,38 @@ internal sealed class TranscodeExecutor
 
             if (exitCode != 0)
             {
+                var signal = FfmpegExecutor.ReceivedSignal(stdErrTail);
+                await WaitOutInterruptionAsync(job, "ffmpeg", signal, cancellationToken).ConfigureAwait(false);
                 job.LogExcerpt = stdErrTail;
-                Fail(job, "ffmpeg exited with code " + exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                Fail(
+                    job,
+                    "ffmpeg exited with code " + exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        + (signal is null ? string.Empty : FormattableString.Invariant($" after receiving signal {signal}, and the server did not stop")));
                 TryDelete(tempFile);
                 return;
             }
 
             SetDetail(job, "verifying");
-            var (ok, reason) = await OutputVerifier.VerifyAsync(_prober, tempFile, probe, cancellationToken).ConfigureAwait(false);
+            bool ok;
+            string reason;
+            using (var signals = ProcessRunner.WatchSignals())
+            {
+                (ok, reason) = await OutputVerifier.VerifyAsync(_prober, tempFile, probe, cancellationToken).ConfigureAwait(false);
+                if (!ok)
+                {
+                    await WaitOutInterruptionAsync(job, "ffprobe", signals.Signal, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
             if (!ok)
             {
                 Fail(job, "output verification failed: " + reason);
                 TryDelete(tempFile);
+                return;
+            }
+
+            if (DiscardIfSourceChanged(job, sourceAtStart, tempFile))
+            {
                 return;
             }
 
@@ -260,16 +309,22 @@ internal sealed class TranscodeExecutor
             // and does not re-transcode it on every sweep just to discard the result again.
             if (profile.DiscardOutputIfLarger && OutputIsNotSmaller(job.SourcePath, tempFile, out var sourceBytes, out var outputBytes))
             {
-                job.Status = JobStatus.Skipped;
-                job.StatusDetail = FormattableString.Invariant(
-                    $"kept original — transcode was not smaller ({outputBytes / (1024d * 1024d):F0} MB vs {sourceBytes / (1024d * 1024d):F0} MB source)");
-                job.OutputPath = job.SourcePath;
-                job.OutputSizeBytes = sourceBytes;
-                job.Progress = 100;
-                job.FinishedUtc = DateTime.UtcNow;
-                _queue.Update(job);
+                Finish(job, JobStatus.Skipped, j =>
+                {
+                    j.StatusDetail = FormattableString.Invariant(
+                        $"kept original — transcode was not smaller ({outputBytes / (1024d * 1024d):F0} MB vs {sourceBytes / (1024d * 1024d):F0} MB source)");
+                    j.OutputPath = j.SourcePath;
+                    j.OutputSizeBytes = sourceBytes;
+                    j.Progress = 100;
+                });
                 TryDelete(tempFile);
                 _logger.LogInformation("Kept original for {Path}: output {OutputBytes} B not smaller than source {SourceBytes} B", job.SourcePath, outputBytes, sourceBytes);
+                return;
+            }
+
+            // And again as late as possible, right before the source is touched.
+            if (DiscardIfSourceChanged(job, sourceAtStart, tempFile))
+            {
                 return;
             }
 
@@ -286,13 +341,14 @@ internal sealed class TranscodeExecutor
                 await _libraryUpdater.TryUpdateAsync(job.SourcePath, finalPath, CancellationToken.None).ConfigureAwait(false);
             }
 
-            job.Status = JobStatus.Completed;
-            job.Progress = 100;
-            job.StatusDetail = string.Empty;
-            job.OutputPath = finalPath;
-            job.OutputSizeBytes = FileSizeOrZero(finalPath);
-            job.FinishedUtc = DateTime.UtcNow;
-            _queue.Update(job);
+            var finalBytes = FileSizeOrZero(finalPath);
+            Finish(job, JobStatus.Completed, j =>
+            {
+                j.Progress = 100;
+                j.StatusDetail = string.Empty;
+                j.OutputPath = finalPath;
+                j.OutputSizeBytes = finalBytes;
+            });
             _logger.LogInformation("Completed {Path} -> {Output}", job.SourcePath, finalPath);
 
             if (profile.OutputMode == OutputHandlingMode.AddAsAlternateVersion)
@@ -305,10 +361,7 @@ internal sealed class TranscodeExecutor
         }
         catch (OperationCanceledException)
         {
-            job.Status = JobStatus.Cancelled;
-            job.StatusDetail = string.Empty;
-            job.FinishedUtc = DateTime.UtcNow;
-            _queue.Update(job);
+            Finish(job, JobStatus.Cancelled, j => j.StatusDetail = string.Empty);
             TryDelete(tempFile);
             _logger.LogInformation("Cancelled job for {Path}", job.SourcePath);
         }
@@ -341,10 +394,18 @@ internal sealed class TranscodeExecutor
         }
     }
 
-    private static EncodingProfile? ResolveProfile(PluginConfiguration config, string profileId)
+    // Only a job queued without a profile of its own runs under the default. One whose profile has since
+    // been deleted used to fall through to the default too, so a job queued for a separate-directory
+    // profile could end up replacing the original under a replace-in-place default. There is no profile
+    // left for it to run under, and guessing one is not safe.
+    internal static EncodingProfile? ResolveProfile(PluginConfiguration config, string profileId)
     {
-        return config.Profiles.FirstOrDefault(p => string.Equals(p.Id, profileId, StringComparison.Ordinal))
-            ?? config.Profiles.FirstOrDefault(p => string.Equals(p.Id, config.DefaultProfileId, StringComparison.Ordinal))
+        if (!string.IsNullOrWhiteSpace(profileId))
+        {
+            return config.Profiles.FirstOrDefault(p => string.Equals(p.Id, profileId, StringComparison.Ordinal));
+        }
+
+        return config.Profiles.FirstOrDefault(p => string.Equals(p.Id, config.DefaultProfileId, StringComparison.Ordinal))
             ?? config.Profiles.FirstOrDefault();
     }
 
@@ -356,12 +417,84 @@ internal sealed class TranscodeExecutor
 
     private void Fail(TranscodeJob job, string message)
     {
-        job.Status = JobStatus.Failed;
-        job.StatusDetail = string.Empty;
-        job.ErrorMessage = message;
-        job.FinishedUtc = DateTime.UtcNow;
-        _queue.Update(job);
+        Finish(job, JobStatus.Failed, j =>
+        {
+            j.StatusDetail = string.Empty;
+            j.ErrorMessage = message;
+        });
         _logger.LogWarning("Job failed for {Path}: {Message}", job.SourcePath, message);
+    }
+
+    // Every final state goes through here, applied under the queue's lock (see IJobQueue.Update). Setting
+    // the fields one by one on the live job let a concurrent enqueue's history trim see it Completed with
+    // no finish time yet, drop it as the oldest record, and leave the update that followed nothing to
+    // save: the Completed record was lost and the next sweep re-encoded the file.
+    private void Finish(TranscodeJob job, JobStatus status, Action<TranscodeJob> change)
+    {
+        var finished = DateTime.UtcNow;
+        _queue.Update(job, j =>
+        {
+            change(j);
+            j.FinishedUtc = finished;
+            j.Status = status;
+        });
+    }
+
+    // The source is re-read here rather than trusted from the start of the job: an *arr importing an
+    // upgrade under the same name while the old release encodes would otherwise have that upgrade
+    // overwritten by an encode of the old one (same container) or deleted in favour of it (Movie.mkv ->
+    // Movie.mp4), a deleted item would be brought back, and an alternate version of old content would be
+    // attached to the new file. Skipped rather than Failed, and with no output recorded: nothing is wrong
+    // with the new file, and a failure would count towards the limit that stops a file being queued
+    // automatically, while a Skipped job with no output does not mark the source as handled — so the
+    // next sweep evaluates the new file like any other.
+    private bool DiscardIfSourceChanged(TranscodeJob job, SourceFingerprint atStart, string tempFile)
+    {
+        var now = SourceFingerprint.Of(job.SourcePath);
+        if (now == atStart)
+        {
+            return false;
+        }
+
+        var detail = now.Exists
+            ? "source changed during the encode; output discarded, original left untouched"
+            : "source was deleted during the encode; output discarded";
+        Finish(job, JobStatus.Skipped, j =>
+        {
+            j.StatusDetail = detail;
+            j.OutputPath = string.Empty;
+            j.OutputSizeBytes = 0;
+            j.Progress = 100;
+        });
+        TryDelete(tempFile);
+        _logger.LogWarning("Discarded the encode of {Path}: {Detail}", job.SourcePath, detail);
+        return true;
+    }
+
+    // A child killed by a signal while the server keeps running was killed by someone; one killed because
+    // the server is stopping is a restart, and recording that as a failure meant three restarts stopped
+    // the file from ever being queued automatically again. The two cannot be told apart when it happens:
+    // systemd's default KillMode signals every process in the service, and Ctrl+C the whole process group,
+    // so ffmpeg is told to stop before the host has even begun stopping the queue. So wait for the stop. If
+    // it comes, its cancellation takes the job down the ordinary cancel path, which puts it back to
+    // Pending. If it does not, the caller records the failure as before rather than requeueing, which
+    // would loop for ever on a file whose encode is always killed (a CPU-time limit, a watchdog).
+    private async Task WaitOutInterruptionAsync(TranscodeJob job, string program, int? signal, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (signal is null)
+        {
+            return;
+        }
+
+        _logger.LogInformation(
+            "{Program} for {Path} was stopped by signal {Signal}; waiting up to {Seconds} s for the server to stop before recording a failure",
+            program,
+            job.SourcePath,
+            signal,
+            InterruptionGrace.TotalSeconds);
+        SetDetail(job, FormattableString.Invariant($"{program} was stopped by signal {signal}; waiting to see whether the server is stopping"));
+        await Task.Delay(InterruptionGrace, cancellationToken).ConfigureAwait(false);
     }
 
     internal static long FileSizeOrZero(string path)

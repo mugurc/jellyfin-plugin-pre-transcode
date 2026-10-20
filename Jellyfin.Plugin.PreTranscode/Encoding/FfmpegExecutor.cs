@@ -121,6 +121,32 @@ internal static class FfmpegExecutor
         return (process.ExitCode, tail);
     }
 
+    /// <summary>
+    /// The signal ffmpeg reports having been stopped by. On SIGINT or SIGTERM it finishes the file, logs
+    /// "Exiting normally, received signal 15." and exits 255 — the same code as a real failure, so the
+    /// log line is the only way to tell a stopped encode from a broken one.
+    /// </summary>
+    /// <param name="stdErrTail">The end of ffmpeg's stderr.</param>
+    /// <returns>The signal number, or <c>null</c> when ffmpeg does not report one.</returns>
+    public static int? ReceivedSignal(string stdErrTail)
+    {
+        const string Marker = "received signal ";
+        var at = stdErrTail.LastIndexOf(Marker, StringComparison.OrdinalIgnoreCase);
+        if (at < 0)
+        {
+            return null;
+        }
+
+        var start = at + Marker.Length;
+        var end = start;
+        while (end < stdErrTail.Length && char.IsAsciiDigit(stdErrTail[end]))
+        {
+            end++;
+        }
+
+        return int.TryParse(stdErrTail.AsSpan(start, end - start), NumberStyles.None, CultureInfo.InvariantCulture, out var signal) ? signal : null;
+    }
+
     // Process.Kill only posts the termination; it returns before the child is gone. The caller deletes the
     // temp output as soon as this returns, so without the wait that delete raced a process still holding
     // the handle — on Windows it fails outright and a part-finished, multi-gigabyte encode is left in the

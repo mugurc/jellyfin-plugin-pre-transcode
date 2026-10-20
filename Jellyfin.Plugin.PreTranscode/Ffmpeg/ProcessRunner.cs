@@ -13,6 +13,27 @@ namespace Jellyfin.Plugin.PreTranscode.Ffmpeg;
 /// </summary>
 internal static class ProcessRunner
 {
+    private static readonly AsyncLocal<SignalWatch?> CurrentWatch = new();
+
+    /// <summary>
+    /// Starts noting, for the calling async flow and until the returned watch is disposed, whether a
+    /// child this runner starts is killed by a signal.
+    /// <para>
+    /// Callers that reach ffprobe through <see cref="Media.IMediaProber"/> only ever see "not media" when
+    /// it fails, which is right for deciding about a file and wrong for deciding about a job: a probe
+    /// killed by the SIGTERM that systemd sends to every process of a stopping service looks exactly like
+    /// a broken output. Ambient rather than a parameter so that the prober in between needs no knowledge
+    /// of it; an <see cref="AsyncLocal{T}"/> keeps one job's watch from seeing another job's probes.
+    /// </para>
+    /// </summary>
+    /// <returns>The watch; dispose it to stop watching.</returns>
+    public static SignalWatch WatchSignals()
+    {
+        var watch = new SignalWatch();
+        CurrentWatch.Value = watch;
+        return watch;
+    }
+
     /// <summary>
     /// Runs a process to completion, capturing combined stdout+stderr. Use this overload only with a
     /// fully-static argument string; any value that contains a caller- or file-supplied token (a path,
@@ -131,10 +152,27 @@ internal static class ProcessRunner
             throw;
         }
 
+        if (CurrentWatch.Value is { } watch && TerminatingSignal(process.ExitCode) is { } signal)
+        {
+            watch.Record(signal);
+        }
+
         lock (syncLock)
         {
             return output.ToString();
         }
+    }
+
+    /// <summary>
+    /// The signal that killed a child, from its exit code: .NET reports a child terminated by signal N as
+    /// exit code 128 + N on Unix. Only meaningful for a program whose own exit codes stay below 129, which
+    /// ffprobe's do (it exits 0 or 1); Windows has no signals.
+    /// </summary>
+    /// <param name="exitCode">The child's exit code.</param>
+    /// <returns>The signal number, or <c>null</c> when the child exited of its own accord.</returns>
+    internal static int? TerminatingSignal(int exitCode)
+    {
+        return !OperatingSystem.IsWindows() && exitCode > 128 && exitCode <= 128 + 64 ? exitCode - 128 : null;
     }
 
     private static void TryKill(Process process)
@@ -149,6 +187,47 @@ internal static class ProcessRunner
         catch (InvalidOperationException)
         {
             // Process already exited; nothing to do.
+        }
+    }
+
+    // Only the flow that started the watch may end it; anything else leaves the current one in place.
+    private static void EndWatch(SignalWatch watch)
+    {
+        if (ReferenceEquals(CurrentWatch.Value, watch))
+        {
+            CurrentWatch.Value = null;
+        }
+    }
+
+    /// <summary>
+    /// Records the signal that killed a child started while it was the current watch. See
+    /// <see cref="WatchSignals"/>.
+    /// </summary>
+    internal sealed class SignalWatch : IDisposable
+    {
+        private int _signal;
+
+        /// <summary>
+        /// Gets the signal that killed the most recent such child, or <c>null</c> if none was.
+        /// </summary>
+        public int? Signal
+        {
+            get
+            {
+                var signal = Volatile.Read(ref _signal);
+                return signal == 0 ? null : signal;
+            }
+        }
+
+        /// <inheritdoc />
+        public void Dispose()
+        {
+            EndWatch(this);
+        }
+
+        internal void Record(int signal)
+        {
+            Volatile.Write(ref _signal, signal);
         }
     }
 }
