@@ -69,6 +69,30 @@ public class RuleTraceTests
         Assert.Contains("[no value set — this condition never passes]", line, System.StringComparison.Ordinal);
     }
 
+    // "," splits to an empty list and never passes, so it has to be called out exactly like a blank value.
+    [Fact]
+    public void DescribeCondition_FlagsAListOfOnlySeparatorsAsUnfinished()
+    {
+        var line = RuleTrace.DescribeCondition(
+            new RuleCondition { Type = ConditionType.VideoCodec, Operator = ComparisonOperator.NotIn, Value = " , " },
+            Info());
+
+        Assert.Contains("[no value set — this condition never passes]", line, System.StringComparison.Ordinal);
+        Assert.EndsWith("=> FAIL", line, System.StringComparison.Ordinal);
+    }
+
+    // The trace must show the fact the container decision was made on — the extension — or "Container
+    // Equals webm => FAIL" next to "actual: matroska,webm" reads like a bug.
+    [Fact]
+    public void DescribeCondition_ContainerShowsTheExtensionItWasDecidedBy()
+    {
+        var line = RuleTrace.DescribeCondition(
+            new RuleCondition { Type = ConditionType.Container, Operator = ComparisonOperator.Equals, Value = "webm" },
+            Info());
+
+        Assert.Equal("Container Equals 'webm' | actual: mkv (file extension; ffprobe: matroska,webm) => FAIL", line);
+    }
+
     [Fact]
     public void DescribeCondition_OmitsTheOperandForPresenceOperators()
     {
@@ -152,7 +176,8 @@ public class RuleTraceTests
         var text = RuleTrace.DescribeMedia(Info());
 
         Assert.Contains("video=hevc 1920x1080", text, System.StringComparison.Ordinal);
-        Assert.Contains("container=matroska,webm", text, System.StringComparison.Ordinal);
+        // The extension decides container conditions, so it leads; ffprobe's format name stays beside it.
+        Assert.Contains("container=mkv (file extension; ffprobe: matroska,webm)", text, System.StringComparison.Ordinal);
         Assert.Contains("duration=120 min", text, System.StringComparison.Ordinal);
         Assert.Contains("size=4000 MB", text, System.StringComparison.Ordinal);
         // Matroska carries no per-stream video bitrate; the trace must show that as unknown, not 0.

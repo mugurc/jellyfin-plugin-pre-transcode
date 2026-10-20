@@ -190,8 +190,24 @@ public sealed class ItemEvaluator
             return false;
         }
 
-        if (AlreadyHandled(knownJobs ?? _queue.GetJobs(), path, profile.Id, TranscodeExecutor.FileSizeOrZero, MaxAutoFailedAttempts))
+        var writtenUtc = WrittenUtcOrNull(path);
+        var jobsSoFar = knownJobs ?? _queue.GetJobs();
+        if (AlreadyHandled(jobsSoFar, path, profile.Id, TranscodeExecutor.FileSizeOrZero, MaxAutoFailedAttempts, writtenUtc))
         {
+            // Handled, but not finished with: replace-in-place put the new file in place and could not
+            // delete this one (on Windows, usually because a player had it open). Jellyfin indexes the
+            // leftover as a second item until someone removes it, and only the admin can, so say so on
+            // every sweep rather than once in a log line from the day it happened.
+            if (profile.OutputMode == OutputHandlingMode.ReplaceInPlace
+                && OriginalLeftBehind(jobsSoFar, path, profile.Id, TranscodeExecutor.FileSizeOrZero, writtenUtc) is { } replacement)
+            {
+                _logger.LogWarning(
+                    "{Path} is still on disk although profile '{Profile}' already replaced it with {Output}; the original could not be deleted at the time. Delete it manually",
+                    path,
+                    profile.Name,
+                    replacement);
+            }
+
             Explain(verbose, path, FormattableString.Invariant(
                 $"the queue already records a finished transcode of this source for profile '{profile.Name}', or it has failed {MaxAutoFailedAttempts} times (requeue it manually from the queue page)"));
             return false;
@@ -238,6 +254,20 @@ public sealed class ItemEvaluator
             return false;
         }
 
+        // The executor runs the same preflight before it encodes, so this is not what keeps a doomed job
+        // from wasting an encode. It is what keeps it out of the queue: a library on a read-only mount (or
+        // with a non-indexable container on a replace-in-place profile) would otherwise be queued, fail
+        // in seconds, and spend MaxAutoFailedAttempts on every item over three sweeps — after which the
+        // whole library stays locked out even once the admin has fixed the mount. Refused here, nothing
+        // is recorded, and the first sweep after the fix picks every item up. Warned, not explained under
+        // verbose: like the self-output guard above, only the admin can fix it.
+        var destinationProblem = OutputApplier.Preflight(profile, path, _logger);
+        if (destinationProblem is not null)
+        {
+            _logger.LogWarning("Skipping {Path}: {Reason}", path, destinationProblem);
+            return false;
+        }
+
         var job = new TranscodeJob
         {
             SourcePath = path,
@@ -253,7 +283,7 @@ public sealed class ItemEvaluator
         // re-transcoded into a "... (1)" file. Evaluated under the queue lock, with the live job list.
         var added = _queue.Enqueue(job, jobs =>
             OutputAlreadyExists(profile, path)
-            || AlreadyHandled(jobs, path, profile.Id, TranscodeExecutor.FileSizeOrZero, MaxAutoFailedAttempts));
+            || AlreadyHandled(jobs, path, profile.Id, TranscodeExecutor.FileSizeOrZero, MaxAutoFailedAttempts, writtenUtc));
         if (added)
         {
             _logger.LogInformation("Queued {Path} using profile {Profile}", path, profile.Name);
@@ -327,12 +357,16 @@ public sealed class ItemEvaluator
     // down for — the pre-existing output it found, or (with DiscardOutputIfLarger) the original it kept
     // because the transcode was not smaller. Either way the source is handled and must not be re-queued
     // and re-transcoded on every sweep. Pure over the job list (outputExists is injected) so it is unit-testable.
+    //
+    // sourceWrittenUtc is when the file now at sourcePath was last written (null when unknown): a failure
+    // recorded before that was a failure on some earlier file at this path, so it does not count.
     internal static bool AlreadyHandled(
         IEnumerable<TranscodeJob> jobs,
         string sourcePath,
         string profileId,
         Func<string, long> outputSize,
-        int maxFailedAttempts)
+        int maxFailedAttempts,
+        DateTime? sourceWrittenUtc = null)
     {
         var failed = 0;
         foreach (var job in jobs)
@@ -352,10 +386,20 @@ public sealed class ItemEvaluator
             // generation every sweep, for as long as the file stayed over the threshold. Recognising the
             // output by name closes that. Scoped to the same profile, like the check below: a different
             // profile transcoding this file is a legitimate chain, not a loop.
-            if (done && string.Equals(job.OutputPath, sourcePath, StringComparison.OrdinalIgnoreCase)
-                && IsStillThatOutput(job, outputSize))
+            //
+            // The same goes for a record whose output is its own source — a same-container replace in
+            // place, or an original kept because the transcode was not smaller. Those used to fall through
+            // to the source-path test below, which accepts any file at that path, so a re-rip or upgrade
+            // landing under the same name was skipped for ever as "already transcoded". Either way the
+            // record vouches only for the file it measured.
+            if (done && string.Equals(job.OutputPath, sourcePath, StringComparison.OrdinalIgnoreCase))
             {
-                return true;
+                if (IsStillThatOutput(job, outputSize))
+                {
+                    return true;
+                }
+
+                continue;
             }
 
             if (!string.Equals(job.SourcePath, sourcePath, StringComparison.OrdinalIgnoreCase))
@@ -363,18 +407,86 @@ public sealed class ItemEvaluator
                 continue;
             }
 
+            // Also how an original that replace-in-place could not delete (a player had it open) stays
+            // handled: its job completed, and the output it recorded still exists.
             if (done && !string.IsNullOrEmpty(job.OutputPath) && outputSize(job.OutputPath) > 0)
             {
                 return true;
             }
 
-            if (job.Status == JobStatus.Failed)
+            if (job.Status == JobStatus.Failed && FailedOnTheCurrentFile(job, sourceWrittenUtc))
             {
                 failed++;
             }
         }
 
         return maxFailedAttempts > 0 && failed >= maxFailedAttempts;
+    }
+
+    // The file a completed replace-in-place of this source wrote under a different name, when that file
+    // still exists — meaning this source is an original the replacement could not delete. Null when the
+    // source was replaced under its own name or kept as the better file, since then nothing was left over,
+    // and when the file at sourcePath was written after the replacement finished: that is something new
+    // that arrived under the old name (an upgrade), not the original.
+    internal static string? OriginalLeftBehind(
+        IEnumerable<TranscodeJob> jobs,
+        string sourcePath,
+        string profileId,
+        Func<string, long> outputSize,
+        DateTime? sourceWrittenUtc = null)
+    {
+        foreach (var job in jobs)
+        {
+            if (job.Status == JobStatus.Completed
+                && string.Equals(job.ProfileId, profileId, StringComparison.Ordinal)
+                && string.Equals(job.SourcePath, sourcePath, StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrEmpty(job.OutputPath)
+                && !string.Equals(job.OutputPath, sourcePath, StringComparison.OrdinalIgnoreCase)
+                && !(sourceWrittenUtc is { } written && job.FinishedUtc is { } finished && written > finished)
+                && outputSize(job.OutputPath) > 0)
+            {
+                return job.OutputPath;
+            }
+        }
+
+        return null;
+    }
+
+    // Failures are counted per path, so three failures on a broken download used to lock out the repaired
+    // file that later replaced it under the same name. A failure that finished before the current file was
+    // written was about an earlier file. An unknown write time, or a record without a finish time, counts
+    // exactly as before.
+    private static bool FailedOnTheCurrentFile(TranscodeJob job, DateTime? sourceWrittenUtc)
+    {
+        return sourceWrittenUtc is not { } written
+            || job.FinishedUtc is not { } finished
+            || finished >= written;
+    }
+
+    /// <summary>
+    /// When the file at <paramref name="path"/> was last written, or <c>null</c> when that cannot be read
+    /// or cannot be believed. A timestamp in the future (a NAS whose clock runs ahead, a camera with a dead
+    /// clock battery) would make every failure look older than the file, and retry a broken encode on
+    /// every sweep for ever — so it is not believed.
+    /// </summary>
+    /// <param name="path">The file path.</param>
+    /// <returns>The last-write time in UTC, or <c>null</c>.</returns>
+    internal static DateTime? WrittenUtcOrNull(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            var written = File.GetLastWriteTimeUtc(path);
+            return written > DateTime.UtcNow ? null : written;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
     }
 
     // Path identity is not file identity. Recognising a candidate purely by the name a finished job
