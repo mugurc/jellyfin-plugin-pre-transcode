@@ -78,19 +78,26 @@ internal static class OutputVerifier
             }
 
             // Scaling changes a picture's size, never its shape. The 15% band absorbs even-dimension
-            // rounding and anamorphic sources; what it is here to catch — portrait cover art standing in
-            // for a landscape film — is out by a factor of two or more.
+            // rounding (including the row or column the builder drops from an odd-sized source) and
+            // anamorphic sources; what it is here to catch — portrait cover art standing in for a
+            // landscape film — is out by a factor of two or more.
             //
             // Both the displayed and the coded shape are accepted, because whether a container crop
             // reaches the output is not ours to decide: ffmpeg applies it from 7.1 onwards and ignores it
             // before that, and the server's ffmpeg is whatever it is. A 3840x2160 source cropped to
             // 3840x1600 therefore verifies against either figure — and cover art at 600x900 still matches
             // neither, which is the whole point of the check (issue #14).
+            //
+            // A quarter-turned source adds the turned coded shape. A re-encode is always rotated upright,
+            // but where the container crop is not applied that upright frame is the coded one turned, not
+            // the displayed one — and a stream copy keeps the display matrix where the container can hold
+            // it (probed upright again) or loses it (the coded landscape frame, already accepted above).
             var outputAspect = output.Width / (double)output.Height;
             if (!ShapeMatches(outputAspect, source.Width, source.Height)
-                && !ShapeMatches(outputAspect, source.CodedWidth, source.CodedHeight))
+                && !ShapeMatches(outputAspect, source.CodedWidth, source.CodedHeight)
+                && !(source.IsQuarterTurn && ShapeMatches(outputAspect, source.CodedHeight, source.CodedWidth)))
             {
-                var coded = source.HasContainerCrop
+                var coded = source.HasContainerCrop || source.IsQuarterTurn
                     ? FormattableString.Invariant($" (coded {source.CodedWidth}x{source.CodedHeight})")
                     : string.Empty;
                 return (false, FormattableString.Invariant(

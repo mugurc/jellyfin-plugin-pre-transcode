@@ -174,8 +174,12 @@ internal sealed partial class MediaProber : IMediaProber
                     info.CodedWidth = (int)GetDouble(stream, "width");
                     info.CodedHeight = (int)GetDouble(stream, "height");
                     var (displayWidth, displayHeight) = ApplyContainerCrop(stream, info.CodedWidth, info.CodedHeight);
-                    info.Width = displayWidth;
-                    info.Height = displayHeight;
+                    info.Rotation = ReadRotation(stream);
+
+                    // The crop is stated in coded pixels and ffmpeg applies it before it rotates, so the
+                    // turn comes second: a 640x360 frame cropped to 640x280 and turned shows as 280x640.
+                    info.Width = info.IsQuarterTurn ? displayHeight : displayWidth;
+                    info.Height = info.IsQuarterTurn ? displayWidth : displayHeight;
                     info.PixelFormat = GetString(stream, "pix_fmt");
                     info.BitDepth = ReadBitDepth(stream, info.PixelFormat);
                     videoStreamBitrate = GetDouble(stream, "bit_rate");
@@ -278,6 +282,97 @@ internal sealed partial class MediaProber : IMediaProber
 
     [GeneratedRegex(@"p\d?(?<bits>\d{2})(le|be)$", RegexOptions.IgnoreCase)]
     private static partial Regex PixelFormatDepthRegex();
+
+    /// <summary>
+    /// The chroma subsampling a pixel format name describes, as the usual J:a:b digits ("420", "422",
+    /// "444"; "400" for greyscale), or <c>null</c> when the name is not recognised.
+    /// </summary>
+    /// <remarks>
+    /// Planar YUV names carry it outright ("yuv420p10le", "yuvj422p", "yuva444p"); the semi-planar ones
+    /// encode it in their digits (nv12 is 4:2:0, nv16 4:2:2, nv24 4:4:4; p010 is 4:2:0, p210 4:2:2,
+    /// p410 4:4:4). RGB has no chroma planes to subsample, so it is 4:4:4 for every purpose here.
+    /// Anything else — a hardware surface name such as "vaapi", an empty probe — is unknown rather than
+    /// guessed, so a caller can tell "differs" from "could not tell".
+    /// </remarks>
+    /// <param name="pixelFormat">The ffmpeg pixel format name.</param>
+    /// <returns>The subsampling, or <c>null</c>.</returns>
+    internal static string? ChromaSubsampling(string pixelFormat)
+    {
+        var format = (pixelFormat ?? string.Empty).ToLowerInvariant();
+        var planar = PlanarYuvRegex().Match(format);
+        if (planar.Success)
+        {
+            return planar.Groups["chroma"].Value;
+        }
+
+        if (format.StartsWith("gray", StringComparison.Ordinal) || format.StartsWith("ya", StringComparison.Ordinal))
+        {
+            return "400";
+        }
+
+        if (format.StartsWith("gbr", StringComparison.Ordinal) || format.Contains("rgb", StringComparison.Ordinal)
+            || format.Contains("bgr", StringComparison.Ordinal))
+        {
+            return "444";
+        }
+
+        var deep = SemiPlanarDeepRegex().Match(format);
+        if (deep.Success)
+        {
+            return deep.Groups["layout"].Value switch
+            {
+                "0" => "420",
+                "2" => "422",
+                "4" => "444",
+                _ => null
+            };
+        }
+
+        return format switch
+        {
+            "nv12" or "nv21" => "420",
+            "nv16" or "nv61" or "nv20le" or "nv20be" => "422",
+            "nv24" or "nv42" => "444",
+            "yuyv422" or "uyvy422" or "yvyu422" => "422",
+            _ => null
+        };
+    }
+
+    [GeneratedRegex(@"^yuvj?a?(?<chroma>4[0-4][0-4])p")]
+    private static partial Regex PlanarYuvRegex();
+
+    // p010le, p016le, p210le, p410le …: the digit after 'p' is the chroma layout, the rest the depth.
+    [GeneratedRegex(@"^p(?<layout>\d)\d{2}(le|be)$")]
+    private static partial Regex SemiPlanarDeepRegex();
+
+    // The display rotation, normalised to 0/90/180/270. Current ffprobe states it as a "Display Matrix"
+    // side-data entry with a signed "rotation" (-90 for the usual portrait phone clip); older builds
+    // exposed the same thing as a "rotate" tag. Only the turn matters here — the sign says which way,
+    // and both ways swap width and height.
+    private static int ReadRotation(JsonElement stream)
+    {
+        double? degrees = null;
+        if (stream.TryGetProperty("side_data_list", out var sideData) && sideData.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in sideData.EnumerateArray())
+            {
+                if (GetString(entry, "side_data_type").Contains("display matrix", StringComparison.OrdinalIgnoreCase)
+                    && entry.TryGetProperty("rotation", out _))
+                {
+                    degrees = GetDouble(entry, "rotation");
+                    break;
+                }
+            }
+        }
+
+        if (degrees is null && stream.TryGetProperty("tags", out var tags) && tags.ValueKind == JsonValueKind.Object)
+        {
+            degrees = GetDouble(tags, "rotate");
+        }
+
+        var rounded = (int)Math.Round(degrees ?? 0) % 360;
+        return rounded < 0 ? rounded + 360 : rounded;
+    }
 
     // A single stream's duration: the numeric "duration" field when ffprobe supplies it, otherwise the
     // Matroska "DURATION" tag, which is a timecode string ("01:59:59.123000000") rather than a number.
