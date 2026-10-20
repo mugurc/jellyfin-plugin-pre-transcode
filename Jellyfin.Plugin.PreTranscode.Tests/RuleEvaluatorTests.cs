@@ -249,6 +249,101 @@ public class RuleEvaluatorTests
         Assert.False(RuleEvaluator.EvaluateCondition(Cond(ConditionType.Container, ComparisonOperator.NotEquals), mkv));
     }
 
+    // A list of nothing but separators splits to an empty list, and "not in an empty list" is true for
+    // every file — a half-typed condition that queued the whole library. The numeric path already
+    // treated an empty list as unfinished; the text conditions now do too.
+    [Theory]
+    [InlineData(ConditionType.VideoCodec, ",")]
+    [InlineData(ConditionType.VideoCodec, " , ")]
+    [InlineData(ConditionType.AudioCodec, ",,")]
+    [InlineData(ConditionType.Container, ",")]
+    [InlineData(ConditionType.Container, " ,, ")]
+    public void ListCondition_OfOnlySeparators_MatchesNothing(ConditionType type, string value)
+    {
+        var info = Info(videoCodec: "hevc", audioCodec: "aac", container: "matroska,webm");
+        info.Path = "/media/Movie.mkv";
+
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(type, ComparisonOperator.NotIn, value), info));
+        Assert.False(RuleEvaluator.EvaluateCondition(Cond(type, ComparisonOperator.In, value), info));
+    }
+
+    // ffprobe reports one format name for .mov and .mp4 ("mov,mp4,m4a,3gp,3g2,mj2") and one for .mkv and
+    // .webm ("matroska,webm"), so "Container Equals mov" — written for iPhone clips — matched every .mp4
+    // movie, and with a replace-in-place profile re-encoded files the admin never targeted. The file's
+    // own extension is what tells them apart.
+    [Fact]
+    public void ContainerCondition_TellsMovFromMp4_AndWebmFromMkv_ByTheFileExtension()
+    {
+        var mp4 = WithPath(Info(container: "mov,mp4,m4a,3gp,3g2,mj2"), "/media/Movie.mp4");
+        var mov = WithPath(Info(container: "mov,mp4,m4a,3gp,3g2,mj2"), "/media/IMG_0001.MOV");
+        var mkv = WithPath(Info(container: "matroska,webm"), "/media/Movie.mkv");
+        var webm = WithPath(Info(container: "matroska,webm"), "/media/Clip.webm");
+
+        Assert.False(Container(ComparisonOperator.Equals, "mov", mp4));
+        Assert.True(Container(ComparisonOperator.Equals, "mov", mov));
+        Assert.True(Container(ComparisonOperator.NotEquals, "mov", mp4));
+        Assert.False(Container(ComparisonOperator.Equals, "mp4", mov));
+
+        Assert.False(Container(ComparisonOperator.Equals, "webm", mkv));
+        Assert.True(Container(ComparisonOperator.Equals, "webm", webm));
+        Assert.True(Container(ComparisonOperator.NotIn, "webm", mkv));
+        Assert.False(Container(ComparisonOperator.Equals, "mkv", webm));
+    }
+
+    // Rules that name a format family rather than an extension keep matching the files they obviously
+    // meant, including a format name copied verbatim out of the explain log.
+    [Fact]
+    public void ContainerCondition_FamilyNamesAndAliasesStillMatch()
+    {
+        var mkv = WithPath(Info(container: "matroska,webm"), "/media/Movie.mkv");
+        var webm = WithPath(Info(container: "matroska,webm"), "/media/Clip.webm");
+        var m4v = WithPath(Info(container: "mov,mp4,m4a,3gp,3g2,mj2"), "/media/Movie.m4v");
+        var ts = WithPath(Info(container: "mpegts"), "/media/Recording.ts");
+        var m2ts = WithPath(Info(container: "mpegts"), "/media/00001.m2ts");
+
+        Assert.True(Container(ComparisonOperator.Equals, "matroska", mkv));
+        Assert.True(Container(ComparisonOperator.Equals, "matroska", webm));
+        Assert.True(Container(ComparisonOperator.Equals, "MKV", mkv));
+        Assert.True(Container(ComparisonOperator.Equals, "mp4", m4v));
+        Assert.True(Container(ComparisonOperator.Equals, "ts", ts));
+        Assert.True(Container(ComparisonOperator.Equals, "mpegts", ts));
+        Assert.True(Container(ComparisonOperator.Equals, "mpegts", m2ts));
+        Assert.True(Container(ComparisonOperator.Equals, "matroska,webm", mkv));
+        Assert.True(Container(ComparisonOperator.In, "avi, mkv", mkv));
+    }
+
+    // With no usable extension there is nothing better than ffprobe's format name, so the old behaviour
+    // stands.
+    [Fact]
+    public void ContainerCondition_WithoutAnExtension_FallsBackToTheFormatName()
+    {
+        var bare = WithPath(Info(container: "matroska,webm"), "/media/Movie");
+
+        Assert.True(Container(ComparisonOperator.Equals, "mkv", bare));
+        Assert.True(Container(ComparisonOperator.Equals, "matroska", bare));
+        Assert.False(Container(ComparisonOperator.Equals, "mp4", bare));
+    }
+
+    [Fact]
+    public void ContainerActualValue_ShowsWhatTheDecisionUsed()
+    {
+        var mkv = WithPath(Info(container: "matroska,webm"), "/media/Movie.mkv");
+
+        Assert.Equal("mkv (file extension; ffprobe: matroska,webm)", RuleEvaluator.ActualValue(ConditionType.Container, mkv));
+        Assert.Equal("matroska,webm", RuleEvaluator.ActualValue(ConditionType.Container, Info(container: "matroska,webm")));
+    }
+
+    private static MediaProbeInfo WithPath(MediaProbeInfo info, string path)
+    {
+        info.Path = path;
+        return info;
+    }
+
+    private static bool Container(ComparisonOperator op, string value, MediaProbeInfo info)
+    {
+        return RuleEvaluator.EvaluateCondition(Cond(ConditionType.Container, op, value), info);
+    }
+
     // The scalar audio fields are copied from the FIRST stream, so every audio condition only ever saw
     // track one. On a remux whose commentary is muxed ahead of the main track — routine — both of these
     // answered about the 2-channel commentary and the file was never queued.

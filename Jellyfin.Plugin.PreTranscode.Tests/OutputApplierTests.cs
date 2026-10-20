@@ -1,6 +1,10 @@
+using System;
 using System.IO;
+using System.Linq;
+using Emby.Naming.Common;
 using Jellyfin.Plugin.PreTranscode.Configuration;
 using Jellyfin.Plugin.PreTranscode.Encoding;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.PreTranscode.Tests;
 
@@ -275,6 +279,215 @@ public class OutputApplierTests
             Assert.NotEqual(source, final);
             Assert.True(File.Exists(source));
             Assert.Equal("original", File.ReadAllText(source));
+        }
+        finally
+        {
+            Directory.Delete(work, recursive: true);
+        }
+    }
+
+    // ffmpeg's muxer names are not file extensions. Appending the muxer name made an mpegts profile write
+    // "Recording.mpegts" — an extension Jellyfin does not index — and replace-in-place then deleted the
+    // Recording.ts it was replacing, so the item dropped out of the library. Every mapping must land on
+    // an extension Jellyfin's own scanner treats as video.
+    [Theory]
+    [InlineData("mpegts", ".ts")]
+    [InlineData("MPEGTS", ".ts")]
+    [InlineData("ogg", ".ogv")]
+    [InlineData("ipod", ".m4v")]
+    [InlineData("psp", ".mp4")]
+    [InlineData("dvd", ".mpg")]
+    [InlineData("svcd", ".mpg")]
+    [InlineData("vcd", ".mpg")]
+    [InlineData("matroska", ".mkv")]
+    [InlineData("mp4", ".mp4")]
+    [InlineData("", ".mp4")]
+    public void ContainerExtension_MapsMuxerNamesToExtensionsJellyfinIndexesAsVideo(string container, string expected)
+    {
+        var extension = OutputApplier.ContainerExtension(container);
+
+        Assert.Equal(expected, extension);
+        Assert.Contains(extension, new NamingOptions().VideoFileExtensions, StringComparer.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(".mkv", true)]
+    [InlineData(".MP4", true)]
+    [InlineData(".ts", true)]
+    [InlineData(".ogv", true)]
+    [InlineData(".nut", false)]
+    [InlineData(".ismv", false)]
+    [InlineData(".ogg", false)] // Jellyfin files .ogg under audio
+    public void IsIndexedAsVideo_FollowsJellyfinsOwnExtensionList(string extension, bool expected)
+    {
+        Assert.Equal(expected, OutputApplier.IsIndexedAsVideo(extension));
+    }
+
+    [Fact]
+    public void ReplaceInPlace_MpegtsProfile_ReplacesTheRecordingUnderItsOwnName()
+    {
+        var work = NewWorkDir();
+        try
+        {
+            var source = Path.Combine(work, "Recording.ts");
+            var temp = Path.Combine(work, "tmp.ts");
+            File.WriteAllText(source, "original");
+            File.WriteAllText(temp, "encoded");
+
+            var final = OutputApplier.Apply(Profile(OutputHandlingMode.ReplaceInPlace, "mpegts"), source, temp);
+
+            Assert.Equal(source, final);
+            Assert.Equal("encoded", File.ReadAllText(source));
+            Assert.Equal(new[] { "Recording.ts" }, Directory.GetFiles(work).Select(Path.GetFileName));
+        }
+        finally
+        {
+            Directory.Delete(work, recursive: true);
+        }
+    }
+
+    // Windows will not delete a file a player has open (Jellyfin opens media without FileShare.Delete),
+    // and CIFS can refuse as well. By then Movie.mp4 is already in place, so throwing marked the job
+    // Failed with both files on disk, skipped the library repoint, and the next sweep re-encoded the
+    // original into "Movie (1).mp4" — up to three times. The replacement succeeded; the leftover original
+    // is a warning for the admin, not a failure.
+    [Fact]
+    public void ReplaceInPlace_OriginalThatCannotBeDeleted_StillReturnsTheNewFile_AndSaysSo()
+    {
+        var work = NewWorkDir();
+        try
+        {
+            var source = Path.Combine(work, "Movie.mkv");
+            var temp = Path.Combine(work, "tmp.mp4");
+            File.WriteAllText(source, "original");
+            File.WriteAllText(temp, "encoded");
+            var logger = new CapturingLogger();
+
+            var final = OutputApplier.Apply(
+                Profile(OutputHandlingMode.ReplaceInPlace, "mp4"),
+                source,
+                temp,
+                logger,
+                _ => throw new IOException("The process cannot access the file because it is being used by another process."));
+
+            Assert.Equal(Path.Combine(work, "Movie.mp4"), final);
+            Assert.Equal("encoded", File.ReadAllText(final));
+            Assert.True(File.Exists(source), "the original could not be deleted, so it is still there");
+            Assert.Contains(
+                logger.Entries,
+                e => e.Level == LogLevel.Warning
+                    && e.Message.Contains(source, StringComparison.Ordinal)
+                    && e.Message.Contains("manually", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(work, recursive: true);
+        }
+    }
+
+    // Camera footage on a case-insensitive filesystem (macOS APFS, SMB/CIFS, exFAT): GOPR0001.MP4 under an
+    // mp4 profile targets "GOPR0001.mp4". The names differ only by case, so the ordinal comparison called
+    // them different files, File.Exists found the source itself through case folding, and the output was
+    // written as "GOPR0001 (1).mp4" — the original deleted and GOPR0001.srt no longer matching anything.
+    // A case-only difference is not a container change, so the source is replaced under its own name on
+    // every filesystem.
+    [Fact]
+    public void ReplaceInPlace_ExtensionDifferingOnlyByCase_ReplacesTheSourceUnderItsOwnName()
+    {
+        var work = NewWorkDir();
+        var temp = Path.Combine(Path.GetTempPath(), "pretranscode-oa-temp-" + Path.GetRandomFileName() + ".mp4");
+        try
+        {
+            var source = Path.Combine(work, "GOPR0001.MP4");
+            File.WriteAllText(source, "original");
+            File.WriteAllText(Path.Combine(work, "GOPR0001.srt"), "subs");
+            File.WriteAllText(temp, "encoded");
+
+            var final = OutputApplier.Apply(Profile(OutputHandlingMode.ReplaceInPlace, "mp4"), source, temp);
+
+            Assert.Equal(source, final);
+            Assert.Equal("encoded", File.ReadAllText(source));
+            Assert.Equal(
+                new[] { "GOPR0001.MP4", "GOPR0001.srt" },
+                Directory.GetFiles(work).Select(f => Path.GetFileName(f)).OrderBy(n => n, StringComparer.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(work, recursive: true);
+            File.Delete(temp);
+        }
+    }
+
+    // On a case-sensitive filesystem both spellings can be two different files. Only the source may be
+    // touched; the other file must come through untouched. (On a case-insensitive filesystem the two
+    // names are one file and the situation cannot be built, which the test detects rather than assumes.)
+    [Fact]
+    public void ReplaceInPlace_ExtensionDifferingOnlyByCase_NeverTouchesAnotherFileOfThatSpelling()
+    {
+        var work = NewWorkDir();
+        var temp = Path.Combine(Path.GetTempPath(), "pretranscode-oa-temp-" + Path.GetRandomFileName() + ".mp4");
+        try
+        {
+            var source = Path.Combine(work, "GOPR0001.MP4");
+            var other = Path.Combine(work, "GOPR0001.mp4");
+            File.WriteAllText(source, "original");
+            var caseSensitive = !File.Exists(other);
+            if (caseSensitive)
+            {
+                File.WriteAllText(other, "a different file");
+            }
+
+            File.WriteAllText(temp, "encoded");
+
+            var final = OutputApplier.Apply(Profile(OutputHandlingMode.ReplaceInPlace, "mp4"), source, temp);
+
+            Assert.Equal(source, final);
+            Assert.Equal("encoded", File.ReadAllText(source));
+            Assert.Equal(caseSensitive ? 2 : 1, Directory.GetFiles(work).Length);
+            if (caseSensitive)
+            {
+                Assert.Equal("a different file", File.ReadAllText(other));
+            }
+        }
+        finally
+        {
+            Directory.Delete(work, recursive: true);
+            File.Delete(temp);
+        }
+    }
+
+    // A restart or `docker stop` (SIGKILL after 10 s) during a multi-minute cross-volume copy left the
+    // partial ".pretranscode-tmp-*" scratch next to the media for ever — startup only clears the plugin's
+    // own temp directory. A scratch nobody has written to for hours is debris; one written moments ago may
+    // be another job's copy in progress and must be left alone.
+    [Theory]
+    [InlineData(OutputHandlingMode.ReplaceInPlace)]
+    [InlineData(OutputHandlingMode.AddAsAlternateVersion)]
+    [InlineData(OutputHandlingMode.SeparateDirectory)]
+    public void Apply_RemovesStaleScratchFromAKilledApply_ButNotOneStillBeingWritten(OutputHandlingMode mode)
+    {
+        var work = NewWorkDir();
+        try
+        {
+            var source = Path.Combine(work, "movie.mkv");
+            var temp = Path.Combine(work, "tmp.mp4");
+            var outDir = Path.Combine(work, "out");
+            var scratchDir = mode == OutputHandlingMode.SeparateDirectory ? outDir : work;
+            Directory.CreateDirectory(scratchDir);
+            File.WriteAllText(source, "original");
+            File.WriteAllText(temp, "encoded");
+            var stale = Path.Combine(scratchDir, ".pretranscode-tmp-0123456789abcdef0123456789abcdef.mkv");
+            var live = Path.Combine(scratchDir, ".pretranscode-tmp-fedcba9876543210fedcba9876543210.mkv");
+            File.WriteAllText(stale, "half a copy");
+            File.SetLastWriteTimeUtc(stale, DateTime.UtcNow.AddHours(-7));
+            File.WriteAllText(live, "another job's copy in progress");
+            var logger = new CapturingLogger();
+
+            OutputApplier.Apply(Profile(mode, "mp4", mode == OutputHandlingMode.SeparateDirectory ? outDir : string.Empty), source, temp, logger);
+
+            Assert.False(File.Exists(stale), "a scratch nobody has written to for hours is debris");
+            Assert.True(File.Exists(live), "a scratch written moments ago may belong to a concurrent job");
+            Assert.Contains(logger.Entries, e => e.Message.Contains(stale, StringComparison.Ordinal));
         }
         finally
         {
