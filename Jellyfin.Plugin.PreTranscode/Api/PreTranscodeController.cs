@@ -219,9 +219,10 @@ public class PreTranscodeController : ControllerBase
     /// Manually enqueues a job for a file path.
     /// </summary>
     /// <param name="request">The enqueue request.</param>
-    /// <returns>The created job, or a conflict result if a duplicate was skipped.</returns>
+    /// <returns>The created job, 400 for a missing path or an unknown profile, or 409 if a duplicate was skipped.</returns>
     [HttpPost("Jobs")]
     [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public ActionResult<TranscodeJob> EnqueueJob([FromBody] EnqueueJobRequest request)
     {
@@ -230,10 +231,16 @@ public class PreTranscodeController : ControllerBase
             return BadRequest("SourcePath is required.");
         }
 
+        var (profileId, profileError) = ResolveProfileId(Plugin.Instance?.Configuration, request.ProfileId);
+        if (profileError is not null)
+        {
+            return BadRequest(profileError);
+        }
+
         var job = new TranscodeJob
         {
             SourcePath = request.SourcePath,
-            ProfileId = request.ProfileId,
+            ProfileId = profileId,
             ItemId = request.ItemId,
             DisplayName = string.IsNullOrWhiteSpace(request.DisplayName) ? System.IO.Path.GetFileName(request.SourcePath) : request.DisplayName,
             CreatedUtc = DateTime.UtcNow
@@ -337,9 +344,10 @@ public class PreTranscodeController : ControllerBase
     /// skips at execution time if the item is already compliant with the chosen profile.
     /// </summary>
     /// <param name="request">The enqueue-by-item request.</param>
-    /// <returns>The created job, 404 if the item/file is missing, or 409 if already queued.</returns>
+    /// <returns>The created job, 400 for a bad id or an unknown profile, 404 if the item/file is missing, or 409 if already queued.</returns>
     [HttpPost("Jobs/Item")]
     [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(StatusCodes.Status409Conflict)]
     public ActionResult<TranscodeJob> EnqueueItem([FromBody] EnqueueItemRequest request)
@@ -349,6 +357,12 @@ public class PreTranscodeController : ControllerBase
         if (!Guid.TryParse(request.ItemId, out var guid) || guid.Equals(Guid.Empty))
         {
             return BadRequest("A valid ItemId is required.");
+        }
+
+        var (profileId, profileError) = ResolveProfileId(Plugin.Instance?.Configuration, request.ProfileId);
+        if (profileError is not null)
+        {
+            return BadRequest(profileError);
         }
 
         var item = _libraryManager.GetItemById(guid);
@@ -369,7 +383,7 @@ public class PreTranscodeController : ControllerBase
         var job = new TranscodeJob
         {
             SourcePath = item.Path,
-            ProfileId = request.ProfileId,
+            ProfileId = profileId,
             ItemId = item.Id.ToString("N"),
             DisplayName = FriendlyName(item),
             CreatedUtc = DateTime.UtcNow
@@ -382,6 +396,28 @@ public class PreTranscodeController : ControllerBase
 
         _logger.LogInformation("Manually queued single item {Name} ({Path})", job.DisplayName, job.SourcePath);
         return Ok(job);
+    }
+
+    // The profile id a manually queued job is stored with. An empty request means the global default and is
+    // stored as that profile's actual id, resolved the way ItemEvaluator resolves it: the sweep recognises
+    // a finished job only by an exact profile-id match, so a job kept as "" never counted as done and the
+    // same file could be re-encoded on every pass. An id that names no profile is refused here rather than
+    // queued to fail later.
+    internal static (string ProfileId, string? Error) ResolveProfileId(PluginConfiguration? config, string? requested)
+    {
+        var profiles = config?.Profiles ?? new List<EncodingProfile>();
+        if (string.IsNullOrWhiteSpace(requested))
+        {
+            var fallback = profiles.FirstOrDefault(p => string.Equals(p.Id, config?.DefaultProfileId, StringComparison.Ordinal))
+                ?? profiles.FirstOrDefault();
+            return fallback is null
+                ? (string.Empty, "No encoding profile is configured.")
+                : (fallback.Id, null);
+        }
+
+        return profiles.Any(p => string.Equals(p.Id, requested, StringComparison.Ordinal))
+            ? (requested, null)
+            : (string.Empty, "Unknown ProfileId '" + requested + "'. GET PreTranscode/Profiles lists the configured ones; leave it empty for the default profile.");
     }
 
     // Builds a human-friendly label: "Series - S01E02 - Title" for an episode, "Title (Year)" for a

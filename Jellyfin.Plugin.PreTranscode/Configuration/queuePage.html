@@ -166,7 +166,8 @@
                 btn.innerHTML = '<span>Cancel</span>';
                 btn.addEventListener('click', function () {
                     api('POST', 'Jobs/' + job.Id + '/Cancel').then(load, function () {
-                        setError('Could not cancel that job — it may have just finished.');
+                        // An alert: setError's line is cleared by the reload's success before it can be read.
+                        Dashboard.alert('Could not cancel that job — it may have just finished.');
                         load();
                     });
                 });
@@ -405,20 +406,26 @@
                 sweepTimer = setTimeout(load, 1000);
             }, function () { setError('Could not start the library scan.'); });
         });
-        page.querySelector('#btnPause').addEventListener('click', function () { api('POST', 'Queue/Pause').then(load); });
+        // The queue-wide buttons. A bare .then(load) failed without a word — Pause in particular looked as
+        // if it had worked until the next poll quietly showed otherwise. An alert, not setError: the
+        // reload right after a failure clears the error line before it can be read.
+        function control(path, failure) {
+            return api('POST', path).then(load, function () { Dashboard.alert(failure); load(); });
+        }
+        page.querySelector('#btnPause').addEventListener('click', function () { control('Queue/Pause', 'Could not pause the queue.'); });
         page.querySelector('#btnResume').addEventListener('click', function () {
             if (lastSchedule.Holding && !window.confirm('The processing window ' + lastSchedule.Start + '–' + lastSchedule.Stop
                 + ' is closed. Start processing now anyway? It will stop again at ' + lastSchedule.NextChange + '.')) { return; }
-            api('POST', 'Queue/Resume').then(load);
+            control('Queue/Resume', 'Could not resume the queue.');
         });
         page.querySelector('#btnCancelAll').addEventListener('click', function () {
             if (window.confirm('Cancel all pending and processing jobs? Any running encode will be aborted.')) {
-                api('POST', 'Jobs/CancelAll').then(load);
+                control('Jobs/CancelAll', 'Could not cancel the jobs.');
             }
         });
         page.querySelector('#btnClear').addEventListener('click', function () {
             if (window.confirm('Delete every finished job record? A source whose record is gone can be picked up by a later sweep again.')) {
-                api('POST', 'Jobs/ClearFinished').then(load);
+                control('Jobs/ClearFinished', 'Could not clear the finished jobs.');
             }
         });
         page.querySelector('#btnRefresh').addEventListener('click', function () { lastSig = null; load(); });
