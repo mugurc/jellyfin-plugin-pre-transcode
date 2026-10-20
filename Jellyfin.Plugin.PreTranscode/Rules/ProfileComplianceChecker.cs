@@ -14,7 +14,7 @@ namespace Jellyfin.Plugin.PreTranscode.Rules;
 internal static class ProfileComplianceChecker
 {
     // True when the source already matches the profile in every dimension it would otherwise change
-    // (codec, container, resolution cap, audio codec/channels, HDR tone-mapping).
+    // (codec, container, resolution cap, HDR tone-mapping, bit depth/chroma, audio codec/channels).
     public static bool IsAlreadyCompliant(EncodingProfile profile, MediaProbeInfo info, IReadOnlyList<ResolutionPreset> presets)
     {
         return !NeedsWork(profile, info, presets, out _);
@@ -22,9 +22,9 @@ internal static class ProfileComplianceChecker
 
     /// <summary>
     /// Whether this profile stands a matched source down as "nothing to do here". The compliance check
-    /// compares only codec, container, resolution, audio and HDR — never file size or bitrate — so a
-    /// profile whose purpose is to re-encode material that already carries the target codec must be able
-    /// to opt out, or it silently vetoes the very trigger rules written to drive it.
+    /// compares only codec, container, resolution, HDR, pixel format and audio — never file size or
+    /// bitrate — so a profile whose purpose is to re-encode material that already carries the target
+    /// codec must be able to opt out, or it silently vetoes the very trigger rules written to drive it.
     /// <para>
     /// The evaluator (before queueing) and the executor (before encoding, and the only gate a manually
     /// queued item passes) both decide through here, so the two can never disagree.
@@ -75,6 +75,11 @@ internal static class ProfileComplianceChecker
             return true;
         }
 
+        if (!IsCopy(profile.VideoCodec) && PixelFormatNeedsWork(profile, info, out reason))
+        {
+            return true;
+        }
+
         if (ExceedsChannels(profile, info))
         {
             reason = "audio channels exceed cap";
@@ -82,6 +87,39 @@ internal static class ProfileComplianceChecker
         }
 
         reason = string.Empty;
+        return false;
+    }
+
+    // The codec name alone said nothing about whether a client can decode the stream: H.264 High 10 and
+    // High 4:4:4 are both "h264", most devices play neither, and the builder re-encodes both to 8-bit
+    // 4:2:0 — yet compliance called them already compliant, so neither the evaluator nor the executor
+    // ever let them reach it. The verdict comes from the builder's own pixel-format policy (see
+    // FfmpegCommandBuilder.PolicyPixelFormat for what it assumes about the encoder), so a file is work
+    // exactly when its encode would change the depth or the chroma, and the encoder's output — which
+    // has the chosen format — is compliant on the next sweep. Only a KNOWN difference counts: a probe
+    // that could not tell the depth or the format is not evidence of one.
+    private static bool PixelFormatNeedsWork(EncodingProfile profile, MediaProbeInfo info, out string reason)
+    {
+        reason = string.Empty;
+        var target = FfmpegCommandBuilder.PolicyPixelFormat(profile, info);
+        if (target is null)
+        {
+            return false;
+        }
+
+        if (info.BitDepth > 0 && info.BitDepth != MediaProber.BitDepthFromPixelFormat(target))
+        {
+            reason = "bit depth differs";
+            return true;
+        }
+
+        var sourceChroma = MediaProber.ChromaSubsampling(info.PixelFormat);
+        if (sourceChroma is not null && sourceChroma != MediaProber.ChromaSubsampling(target))
+        {
+            reason = "chroma subsampling differs";
+            return true;
+        }
+
         return false;
     }
 

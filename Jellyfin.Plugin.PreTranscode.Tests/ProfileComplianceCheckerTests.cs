@@ -263,4 +263,136 @@ public class ProfileComplianceCheckerTests
         Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(profile, info, Presets));
     }
 
+    // ---- pixel format ----
+    //
+    // The builder re-encodes H.264 High 10 and High 4:4:4 to 8-bit 4:2:0 (most clients cannot decode
+    // either), but compliance compared only the codec name — so both were skipped as "already compliant"
+    // and never reached the encoder that would have fixed them.
+
+    private static MediaProbeInfo Pixels(string vc, string pixelFormat, int bitDepth, bool hdr = false, string container = "mp4")
+    {
+        var info = Info(vc: vc, container: container, hdr: hdr);
+        info.PixelFormat = pixelFormat;
+        info.BitDepth = bitDepth;
+        return info;
+    }
+
+    [Fact]
+    public void H264High10_UnderAnH264Profile_NeedsWork()
+    {
+        var p = Profile();
+        p.Container = "matroska";
+        var hi10p = Pixels("h264", "yuv420p10le", 10, container: "matroska,webm");
+
+        Assert.True(ProfileComplianceChecker.NeedsWork(p, hi10p, Presets, out var reason));
+        Assert.Equal("bit depth differs", reason);
+    }
+
+    [Fact]
+    public void H264High444_UnderTheDefaultProfile_NeedsWork()
+    {
+        var hi444 = Pixels("h264", "yuv444p", 8, container: "mov,mp4,m4a,3gp,3g2,mj2");
+
+        Assert.True(ProfileComplianceChecker.NeedsWork(Profile(), hi444, Presets, out var reason));
+        Assert.Equal("chroma subsampling differs", reason);
+    }
+
+    // What the builder produces from either of them is then compliant, so it is not re-encoded forever.
+    [Fact]
+    public void TheEncodersOwnOutput_IsCompliant()
+    {
+        Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(Profile(), Pixels("h264", "yuv420p", 8), Presets));
+    }
+
+    // Full-range 4:2:0 (phones, MJPEG-derived files) is still 8-bit 4:2:0.
+    [Fact]
+    public void FullRangeYuvj420p_IsCompliant()
+    {
+        Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(Profile(), Pixels("h264", "yuvj420p", 8), Presets));
+    }
+
+    // Auto keeps 10 bits for HEVC when the encoder can, and compliance assumes it can. Assuming the
+    // opposite would call every 10-bit HEVC file non-compliant, re-encode it to 10-bit HEVC with libx265,
+    // and find the result non-compliant again on the next sweep.
+    [Fact]
+    public void TenBitHevc_UnderAnHevcAutoProfile_IsCompliant()
+    {
+        var p = Profile();
+        p.VideoCodec = "hevc";
+        p.Container = "matroska";
+
+        Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(p, Pixels("hevc", "yuv420p10le", 10, container: "matroska,webm"), Presets));
+    }
+
+    // ...and an untonemapped HDR source keeps its depth even on H.264.
+    [Fact]
+    public void TenBitHdrH264_NotTonemapped_IsCompliant()
+    {
+        Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(Profile(), Pixels("h264", "yuv420p10le", 10, hdr: true), Presets));
+    }
+
+    [Fact]
+    public void ForceYuv420p_TenBitHevc_NeedsWork()
+    {
+        var p = Profile();
+        p.VideoCodec = "hevc";
+        p.PixelFormatMode = PixelFormatMode.ForceYuv420p;
+
+        Assert.True(ProfileComplianceChecker.NeedsWork(p, Pixels("hevc", "yuv420p10le", 10), Presets, out var reason));
+        Assert.Equal("bit depth differs", reason);
+    }
+
+    // A probe that could not name the format is not evidence of a difference.
+    [Fact]
+    public void UnknownPixelFormat_IsNotWork()
+    {
+        Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(Profile(), Pixels("h264", string.Empty, 0), Presets));
+    }
+
+    [Fact]
+    public void CopyVideo_IgnoresThePixelFormat()
+    {
+        var p = Profile();
+        p.VideoCodec = "copy";
+        Assert.True(ProfileComplianceChecker.IsAlreadyCompliant(p, Pixels("h264", "yuv444p10le", 10), Presets));
+    }
+
+    // The two decisions are one decision. For every combination, compliance reports pixel-format work
+    // exactly when the format the builder picks — given an encoder that offers 10-bit — differs from the
+    // source in depth or chroma.
+    [Theory]
+    [InlineData("h264", PixelFormatMode.Auto)]
+    [InlineData("hevc", PixelFormatMode.Auto)]
+    [InlineData("av1", PixelFormatMode.Auto)]
+    [InlineData("h264", PixelFormatMode.KeepSourceBitDepth)]
+    [InlineData("hevc", PixelFormatMode.ForceYuv420p)]
+    public void PixelFormatVerdict_AgreesWithTheBuilder(string codec, PixelFormatMode mode)
+    {
+        var capable = new[] { "yuv420p", "yuv420p10le", "yuv444p", "yuv444p10le" };
+        var sources = new[]
+        {
+            ("yuv420p", 8), ("yuvj420p", 8), ("yuv420p10le", 10), ("yuv420p12le", 12),
+            ("yuv422p", 8), ("yuv422p10le", 10), ("yuv444p", 8), ("yuv444p10le", 10), ("gbrp", 8),
+        };
+
+        foreach (var hdr in new[] { false, true })
+        {
+            foreach (var (pixelFormat, depth) in sources)
+            {
+                var p = Profile();
+                p.VideoCodec = codec;
+                p.PixelFormatMode = mode;
+                var info = Pixels(codec, pixelFormat, depth, hdr: hdr);
+
+                var chosen = Jellyfin.Plugin.PreTranscode.Encoding.FfmpegCommandBuilder.ChoosePixelFormat(p, info, capable)!;
+                var builderChanges = MediaProber.BitDepthFromPixelFormat(chosen) != depth
+                    || MediaProber.ChromaSubsampling(chosen) != MediaProber.ChromaSubsampling(pixelFormat);
+
+                Assert.True(
+                    builderChanges == ProfileComplianceChecker.NeedsWork(p, info, Presets, out var reason),
+                    $"{codec}/{mode} {pixelFormat} hdr={hdr}: builder picks {chosen}, compliance says '{reason}'");
+            }
+        }
+    }
+
 }

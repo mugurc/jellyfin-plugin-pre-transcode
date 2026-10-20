@@ -116,6 +116,13 @@ internal static class FfmpegCommandBuilder
             args.Add("-c:v");
             args.Add("copy");
 
+            // A Dolby Vision stream keeps its own sample entry (dvh1/dvhe): that is how players find the
+            // enhancement layer, and overwriting it with plain hvc1 would hide it.
+            if (!source.IsDolbyVision)
+            {
+                AddHvc1Tag(args, profile.Container, source.VideoCodec);
+            }
+
             // These used to be dropped without a word on a copy profile. A filter among them still is —
             // it cannot be applied to a stream that is not being re-encoded, and passing it would make
             // ffmpeg refuse the whole job — but everything else the admin configured is honoured.
@@ -125,6 +132,7 @@ internal static class FfmpegCommandBuilder
         {
             args.Add("-c:v");
             args.Add(profile.VideoEncoder);
+            AddHvc1Tag(args, profile.Container, profile.VideoCodec);
 
             if (!string.IsNullOrWhiteSpace(profile.Preset) && EncoderAcceptsPreset(profile.VideoEncoder, profile.Preset))
             {
@@ -154,6 +162,14 @@ internal static class FfmpegCommandBuilder
             }
 
             AddRawWithFilters(args, profile.ExtraVideoArgs, filters);
+
+            // Last in the chain, so it is the frame the encoder actually receives — after the admin's
+            // own filters too — that is made even.
+            var even = scale is null ? EvenDimensionFilter(pixelFormat, source) : null;
+            if (even is not null)
+            {
+                filters.Add(even);
+            }
         }
 
         if (filters.Count > 0)
@@ -175,17 +191,15 @@ internal static class FfmpegCommandBuilder
         {
             // Fallback when the probe did not enumerate per-stream info: apply the target codec to
             // every audio track at once (mapped via 0:a?), downmixing from the first stream's layout.
+            // The layout, like the downmix always was, is chosen from that first stream's channel count;
+            // an unknown (0) count forces nothing. (MediaProber fills AudioChannels from the per-stream
+            // list, so a real probe that reaches this branch found no audio at all.)
+            var encoder = AudioContainerPolicy.EffectiveEncoder(profile);
             args.Add("-c:a");
-            args.Add(AudioContainerPolicy.EffectiveEncoder(profile));
+            args.Add(encoder);
             args.Add("-b:a");
             args.Add(N(profile.AudioBitrateKbps) + "k");
-
-            var cap = ChannelCap(profile);
-            if (cap.HasValue && source.AudioChannels > cap.Value)
-            {
-                args.Add("-ac");
-                args.Add(N(cap.Value));
-            }
+            AddChannelLayout(args, string.Empty, encoder, source.AudioChannels, ChannelCap(profile));
         }
 
         // ---- subtitles ----
@@ -272,6 +286,82 @@ internal static class FfmpegCommandBuilder
         // The encoder advertises formats but no 10-bit one (h264_qsv, for instance, offers only nv12).
         // Falling back to 8-bit keeps the encode working instead of failing on an unsupported format.
         return "yuv420p";
+    }
+
+    /// <summary>
+    /// The pixel format <see cref="ChoosePixelFormat"/> picks when the encoder offers the 10-bit format
+    /// the policy asks for — i.e. the policy's own answer, with encoder capability taken out of it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is what <c>ProfileComplianceChecker</c> compares a source against. The compliance check runs
+    /// in the evaluator, long before anyone has asked ffmpeg what the encoder supports, so it cannot see
+    /// the real list — and the two possible guesses are not equally safe. Assuming "8-bit only" would call
+    /// every 10-bit HEVC file non-compliant under an HEVC profile, re-encode it to 10-bit with libx265, and
+    /// call the result non-compliant again on the next sweep, forever. Assuming the encoder can do what
+    /// the policy wants can only err the other way, once: a 10-bit source the policy would keep at 10 bits
+    /// is left alone even if the configured encoder (h264_qsv, say) would have flattened it — which is
+    /// leaving the file as the admin's chosen mode asked for it to stay.
+    /// </para>
+    /// <para>
+    /// It is the same function with the same inputs, not a copy of its rules, so the builder and the
+    /// compliance check cannot drift apart.
+    /// </para>
+    /// </remarks>
+    /// <param name="profile">The target profile.</param>
+    /// <param name="source">The probed source.</param>
+    /// <returns>The pixel format, or <c>null</c>.</returns>
+    internal static string? PolicyPixelFormat(EncodingProfile profile, MediaProbeInfo source)
+    {
+        return ChoosePixelFormat(profile, source, TenBitCandidates);
+    }
+
+    /// <summary>
+    /// A filter that trims the frame to the even dimensions <paramref name="pixelFormat"/> needs, or
+    /// <c>null</c> when the frame reaching the encoder is already fine. Only consulted when no scale
+    /// filter is emitted — every scale this builder writes lands on even numbers by construction.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 4:2:0 stores one chroma sample per 2x2 block, so libx264/libx265 refuse an odd width or height
+    /// outright ("height not divisible by 2", exit 187); 4:2:2 halves horizontally only, so it needs an
+    /// even width; 4:4:4 has nothing to halve. A 720x303 AVI with no resolution cap, a 4:4:4 source at
+    /// 1279x719, an odd container crop: each failed on every attempt.
+    /// </para>
+    /// <para>
+    /// The frame is cropped, not scaled: losing the last row or column changes nothing a viewer could
+    /// see, where a scale would resample the whole picture to gain one pixel. The crop is written in
+    /// terms of the input size (<c>iw</c>/<c>ih</c>) rather than the probed one, because which size
+    /// arrives depends on the server's ffmpeg — 7.1 and later apply a Matroska container crop, older
+    /// builds do not — so both the displayed and the coded size are tested and either being odd is
+    /// enough to emit it; on a frame that turns out even it is a no-op.
+    /// </para>
+    /// </remarks>
+    /// <param name="pixelFormat">The pixel format the encoder is given.</param>
+    /// <param name="source">The probed source.</param>
+    /// <returns>The crop filter, or <c>null</c>.</returns>
+    internal static string? EvenDimensionFilter(string? pixelFormat, MediaProbeInfo source)
+    {
+        var chroma = MediaProber.ChromaSubsampling(pixelFormat ?? string.Empty);
+        var evenHeight = chroma is "420";
+        var evenWidth = chroma is "420" or "422";
+        if (!evenWidth)
+        {
+            return null;
+        }
+
+        // The coded size is turned like the displayed one, so both describe a frame as it reaches the
+        // encoder: ffmpeg rotates while decoding.
+        var codedWidth = source.IsQuarterTurn ? source.CodedHeight : source.CodedWidth;
+        var codedHeight = source.IsQuarterTurn ? source.CodedWidth : source.CodedHeight;
+        var oddWidth = IsOdd(source.Width) || IsOdd(codedWidth);
+        var oddHeight = evenHeight && (IsOdd(source.Height) || IsOdd(codedHeight));
+        if (!oddWidth && !oddHeight)
+        {
+            return null;
+        }
+
+        return evenHeight ? "crop=trunc(iw/2)*2:trunc(ih/2)*2" : "crop=trunc(iw/2)*2:ih";
     }
 
     // Renders an argument list as a single, log-friendly command line (tokens with spaces are quoted).
@@ -382,14 +472,15 @@ internal static class FfmpegCommandBuilder
             args.Add(fallback);
             args.Add("-b:a:" + idx);
             args.Add(N(profile.AudioBitrateKbps) + "k");
+            AddChannelLayout(args, ":a:" + idx, fallback, source.AudioStreams[i].Channels, null);
         }
     }
 
     // Preserves every audio track (all languages). A track already in the target codec and within the
     // channel cap is copied verbatim (no quality loss); the rest are re-encoded, each downmixed only if
     // it individually exceeds the cap. Per-stream specifiers (:a:i) refer to the i-th mapped audio track.
-    // NOTE: the channel-count option must also carry the audio type qualifier — "-ac:a:i". A bare
-    // "-ac:i" is an output-stream-index specifier (stream 0 is the video, mapped first), so ffmpeg
+    // NOTE: the channel options must also carry the audio type qualifier — "-ac:a:i", "-ch_layout:a:i".
+    // A bare "-ac:i" is an output-stream-index specifier (stream 0 is the video, mapped first), so ffmpeg
     // silently ignores it and the downmix never happens — verified with real ffmpeg: "-ac:0 2" leaves a
     // 5.1 track at 6 channels, while "-ac:a:0 2" correctly yields stereo.
     //
@@ -419,11 +510,100 @@ internal static class FfmpegCommandBuilder
             args.Add(targetEncoder);
             args.Add("-b:a:" + idx);
             args.Add(N(profile.AudioBitrateKbps) + "k");
-            if (cap.HasValue && stream.Channels > cap.Value)
-            {
-                args.Add("-ac:a:" + idx);
-                args.Add(N(cap.Value));
-            }
+            AddChannelLayout(args, ":a:" + idx, targetEncoder, stream.Channels, cap);
+        }
+    }
+
+    // States how many channels a RE-ENCODED track comes out with, and in which layout. One option, never
+    // two: either the layout (which implies the count) or, for an encoder that picks its own layout, the
+    // bare count — and that only when it is a downmix.
+    //
+    // aac and libopus take whatever layout the decoder hands them, and a perfectly ordinary source hands
+    // them one they handle badly. An AC-3/DTS 5.1 track decodes as 5.1(side): jellyfin-ffmpeg 7.1.4's aac
+    // then writes a PCE ("Using a PCE to encode channel layout"), which ffprobe reads back as an unknown
+    // layout and Apple clients refuse outright — the film plays with no main audio — and stock libopus
+    // fails the whole job ("Invalid channel layout 5.1(side) for specified mapping family -1"). Naming
+    // the standard layout for the channel count makes ffmpeg remap side to back, which both encode
+    // natively. Stock ffmpeg 9.0.2 happens to write a readable file without it, which is why this hid.
+    //
+    // Every other encoder is left alone, deliberately. ac3, eac3, libmp3lame and friends declare the
+    // layouts they support and ffmpeg negotiates one of them by itself — a 7.1 source is downmixed to
+    // 5.1 for ac3. Forcing the source's count on them is what breaks: measured on 7.1.4 and 9.0.2, "-ac 8"
+    // makes ac3 abort ("Specified channel layout '7.1' is not supported by the ac3 encoder").
+    private static void AddChannelLayout(List<string> args, string specifier, string encoder, int channels, int? cap)
+    {
+        var downmix = cap.HasValue && channels > cap.Value;
+        var outputChannels = downmix ? cap!.Value : channels;
+
+        var layout = StandardChannelLayout(encoder, outputChannels);
+        if (layout is not null)
+        {
+            args.Add("-ch_layout" + specifier);
+            args.Add(layout);
+        }
+        else if (downmix)
+        {
+            args.Add("-ac" + specifier);
+            args.Add(N(cap!.Value));
+        }
+    }
+
+    /// <summary>
+    /// The layout to give a track that <paramref name="encoder"/> re-encodes to <paramref name="channels"/>
+    /// channels, or <c>null</c> to leave the layout to ffmpeg's own negotiation.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only aac and libopus get one: they accept any layout and mishandle the non-standard ones (see
+    /// <c>AddChannelLayout</c>). The names are spelled out rather than left to <c>-ac</c>, because ffmpeg's
+    /// default layout for a channel count is not always one these encoders take natively — measured on
+    /// 7.1.4 and 9.0.2: <c>-ac 3</c> picks 2.1, which aac writes with a PCE that Apple drops and libopus
+    /// refuses; <c>-ac 4</c> picks 4.0, which libopus refuses. 3.0 and, for libopus, quad (the Vorbis
+    /// order it requires) are what they encode natively.
+    /// </para>
+    /// <para>
+    /// Seven channels have no AAC channel configuration at all, so 6.1 still goes out with a PCE; it is
+    /// at least the standard seven-channel layout rather than whatever the source happened to carry.
+    /// Above eight channels neither encoder has a standard layout, so nothing is forced.
+    /// </para>
+    /// </remarks>
+    /// <param name="encoder">The audio encoder.</param>
+    /// <param name="channels">The output channel count (0 when unknown).</param>
+    /// <returns>The ffmpeg layout name, or <c>null</c>.</returns>
+    internal static string? StandardChannelLayout(string encoder, int channels)
+    {
+        var opus = Same(encoder, "libopus");
+        if (!opus && !Same(encoder, "aac"))
+        {
+            return null;
+        }
+
+        return channels switch
+        {
+            1 => "mono",
+            2 => "stereo",
+            3 => "3.0",
+            4 => opus ? "quad" : "4.0",
+            5 => "5.0",
+            6 => "5.1",
+            7 => "6.1",
+            8 => "7.1",
+            _ => null
+        };
+    }
+
+    // ffmpeg's mp4/mov muxer tags HEVC as hev1 (parameter sets allowed in-band) unless told otherwise.
+    // Apple clients only direct-play hvc1, so an hev1 file is remuxed at playback — the very transcode
+    // this plugin exists to avoid. Measured on 7.1.4 and 9.0.2: the tag is accepted on both a re-encode
+    // and a stream copy, from an mkv or an hev1 mp4 source. Only the mp4 and mov muxers: ipod cannot hold
+    // HEVC at all, and "m4v" is ffmpeg's raw MPEG-4 Part 2 muxer, not an mp4 variant.
+    private static void AddHvc1Tag(List<string> args, string container, string videoCodec)
+    {
+        var muxer = MuxerFor(container).ToLowerInvariant();
+        if ((muxer is "mp4" or "mov") && (Same(videoCodec, "hevc") || Same(videoCodec, "h265")))
+        {
+            args.Add("-tag:v");
+            args.Add("hvc1");
         }
     }
 
@@ -462,10 +642,22 @@ internal static class FfmpegCommandBuilder
     /// which the hard-coded list does not name) made ffmpeg abort the entire encode with "Subtitle
     /// encoding currently only possible from text to text or bitmap to bitmap".
     /// </para>
+    /// <para>
+    /// A container whose subtitle rules are not modelled here — mpegts, avi, ogg, anything an admin picks
+    /// from the muxer list beyond Matroska, webm and the mp4 family — carries none. It used to fall through
+    /// to the Matroska list, so a subrip track was mapped into mpegts with no codec for it and ffmpeg
+    /// stopped with "Error selecting an encoder" (exit 8) on every attempt. Dropping a subtitle loses a
+    /// track the source still has; guessing a codec for a muxer nobody has measured loses the whole job.
+    /// </para>
     /// </summary>
     private static List<int> SubtitlesToCarry(string container, MediaProbeInfo source)
     {
         var carried = new List<int>();
+        if (!IsMatroska(container) && !IsMp4Like(container))
+        {
+            return carried;
+        }
+
         for (var i = 0; i < source.SubtitleStreams.Count; i++)
         {
             var codec = source.SubtitleStreams[i].Codec;
@@ -650,15 +842,23 @@ internal static class FfmpegCommandBuilder
         return string.Equals(container, "webm", StringComparison.OrdinalIgnoreCase);
     }
 
+    // An empty container is muxed as mp4 (MuxerFor), so it is mp4 here too. It used to be neither this
+    // nor Matroska, which sent its subtitles down the Matroska path into an mp4 muxer.
     private static bool IsMp4Like(string container)
     {
         var c = container.ToLowerInvariant();
-        return c is "mp4" or "mov" or "m4v" or "ipod";
+        return c is "mp4" or "mov" or "m4v" or "ipod" or "";
     }
 
     private static bool IsCopy(string codec)
     {
         return string.Equals(codec, "copy", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // An unknown (0) dimension is not odd: it is not evidence of anything.
+    private static bool IsOdd(int value)
+    {
+        return value > 0 && value % 2 != 0;
     }
 
     private static bool Same(string a, string b)
