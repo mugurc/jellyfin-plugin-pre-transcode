@@ -90,6 +90,41 @@ public sealed class ClientCompatibilityIntegrationTests : IDisposable
     }
 
     /// <summary>
+    /// AAC has no seven-channel configuration, so a 6.1 track (DTS-ES, E-AC-3 6.1) re-encoded as 6.1 is
+    /// written with a PCE — "unknown" layout, and a track Apple omits. It goes out as standard 5.1.
+    /// </summary>
+    /// <returns>A task.</returns>
+    [Fact]
+    public async Task SixPointOne_IntoAac_IsTakenDownToStandard51()
+    {
+        if (!TryFindBinaries(out var ffmpeg, out var ffprobe))
+        {
+            return;
+        }
+
+        // FLAC, because AC-3 cannot hold seven channels.
+        var source = Path.Combine(_work, "six1.mkv");
+        await ProcessRunner.RunAsync(
+            ffmpeg,
+            new[]
+            {
+                "-y", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=24:duration=2",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=2,aformat=channel_layouts=6.1",
+                "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "flac", "-shortest", source
+            },
+            60000,
+            CancellationToken.None);
+
+        Assert.Equal("7,6.1", await StreamEntries(ffprobe, source, "a:0", "stream=channels,channel_layout"));
+
+        var profile = Profile("mp4");
+        profile.VideoCodec = "copy";
+        var (output, _, _) = await EncodeAndVerify(ffmpeg, ffprobe, profile, source);
+
+        Assert.Equal("6,5.1", await StreamEntries(ffprobe, output, "a:0", "stream=channels,channel_layout"));
+    }
+
+    /// <summary>
     /// A portrait phone clip: the coded frame is landscape and the display matrix turns it. ffmpeg rotates
     /// while decoding, so a re-encode is upright — and the probe has to say so, or the longest-edge cap
     /// enlarges the narrow side and the verifier rejects the result as the wrong shape. A copy keeps the

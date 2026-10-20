@@ -872,7 +872,8 @@ public class FfmpegCommandBuilderTests
     [InlineData("aac", 4, "4.0")]
     [InlineData("aac", 5, "5.0")]
     [InlineData("aac", 6, "5.1")]
-    [InlineData("aac", 7, "6.1")]
+    // AAC has no seven-channel configuration: 6.1 is always written with a PCE, which Apple omits.
+    [InlineData("aac", 7, "5.1")]
     [InlineData("aac", 8, "7.1")]
     [InlineData("libopus", 3, "3.0")]
     [InlineData("libopus", 4, "quad")]

@@ -499,13 +499,23 @@ public class PreTranscodeController : ControllerBase
     /// Re-queues a finished or failed job.
     /// </summary>
     /// <param name="id">The job id.</param>
-    /// <returns>No content.</returns>
+    /// <returns>No content, 404 if there is no such job, or 409 if it is still running or another job for its file is active.</returns>
     [HttpPost("Jobs/{id}/Requeue")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
     public ActionResult RequeueJob([FromRoute][Required] string id)
     {
-        return _queue.Requeue(id) ? NoContent() : NotFound();
+        if (_queue.Requeue(id))
+        {
+            return NoContent();
+        }
+
+        // A refusal of a job that exists is not "not found": it is still running, or another record of the
+        // same file is already queued or running (re-queueing both used to encode the file twice).
+        return _queue.Get(id) is null
+            ? NotFound()
+            : Conflict("This job is still running, or another job for the same file is already queued or running.");
     }
 
     /// <summary>
