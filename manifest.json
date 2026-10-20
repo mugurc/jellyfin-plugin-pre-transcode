@@ -9,12 +9,28 @@
     "imageUrl": "",
     "versions": [
       {
+        "version": "0.11.1.0",
+        "changelog": "Bug-fix release for Jellyfin 12 (12.0 to 12.2), from a review of the whole plugin. Data safety: with Replace in place, a file that changes during the encode - an upgrade imported under the same name by Sonarr or Radarr - is no longer overwritten or deleted; the encode is discarded instead. A stray control character in a setting no longer wipes the whole configuration at the next start, and a configuration file that cannot be read is now backed up before Jellyfin replaces it. Jobs queued for a profile that was later deleted fail instead of running under the default profile. Containers such as mpegts are written with extensions Jellyfin indexes (.ts), so replacing a recording no longer drops it from the library. Playback: surround audio re-encoded to AAC uses a standard channel layout, so Apple clients no longer drop the track (6.1 becomes 5.1), and HEVC in MP4 is tagged hvc1. Portrait phone videos, odd frame sizes and text subtitles in mpegts or avi no longer fail. H.264 High 10 and 4:2:2/4:4:4 files are no longer skipped as already compliant, so they are queued once. Queue: after a restart, waiting jobs no longer start before Jellyfin has set its ffmpeg path (they failed on Docker), a server stop no longer records the running job as failed, and one file can no longer be encoded twice at once. Settings page: edits are no longer lost when switching or adding profiles. Behaviour change: Container conditions now go by the file extension, so mov no longer matches .mp4 files and mkv no longer matches .webm (matroska still covers both).",
+        "targetAbi": "12.0.0.0",
+        "sourceUrl": "https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases/download/v0.11.1.0/pre-transcode-0.11.1.0.zip",
+        "checksum": "5f9c0ef64bf671efff45626f8d3d3bca",
+        "timestamp": "2026-10-20T11:06:02Z"
+      },
+      {
         "version": "0.11.0.0",
         "changelog": "Jellyfin 12 support. This build targets Jellyfin 12.0 and 12.1 (.NET 10). Servers still on 10.11 stay on the 0.10 line, which remains in this repository and keeps being offered to them - a 10.11 server will not be offered this build, and it would not load there. Nearly everything carried over unchanged. The one part of the plugin that used an API Jellyfin 12 changed is \"Add as alternate version\", which now links versions by item id rather than by file path, as 12 requires. On 12 that output policy also no longer waits five minutes and then warns that the merge was skipped: Jellyfin 12 recognises the companion file as a version of the source from its name, so the plugin now sees that the grouping is already in place and says so instead (issue #15). Includes the container crop fix from 0.10.1.0 (issue #14). If you are on 12 with 0.10.x installed: it does load there, but its alternate-version merge fails on 12 and is logged as a warning - updating to this release fixes that.",
         "targetAbi": "12.0.0.0",
         "sourceUrl": "https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases/download/v0.11.0.0/pre-transcode-0.11.0.0.zip",
         "checksum": "82e1a5f4ac09547ad19bc5976362d259",
         "timestamp": "2026-09-27T23:04:29Z"
+      },
+      {
+        "version": "0.10.2.0",
+        "changelog": "Bug-fix release for Jellyfin 10.11, with the same fixes as 0.11.1.0 for Jellyfin 12, from a review of the whole plugin. Data safety: with Replace in place, a file that changes during the encode - an upgrade imported under the same name by Sonarr or Radarr - is no longer overwritten or deleted; the encode is discarded instead. A stray control character in a setting no longer wipes the whole configuration at the next start, and a configuration file that cannot be read is now backed up before Jellyfin replaces it. Jobs queued for a profile that was later deleted fail instead of running under the default profile. Containers such as mpegts are written with extensions Jellyfin indexes (.ts), so replacing a recording no longer drops it from the library. Playback: surround audio re-encoded to AAC uses a standard channel layout, so Apple clients no longer drop the track (6.1 becomes 5.1), and HEVC in MP4 is tagged hvc1. Portrait phone videos, odd frame sizes and text subtitles in mpegts or avi no longer fail. H.264 High 10 and 4:2:2/4:4:4 files are no longer skipped as already compliant, so they are queued once. Queue: after a restart, waiting jobs no longer start before Jellyfin has set its ffmpeg path (they failed on Docker), a server stop no longer records the running job as failed, and one file can no longer be encoded twice at once. Settings page: edits are no longer lost when switching or adding profiles. Behaviour change: Container conditions now go by the file extension, so mov no longer matches .mp4 files and mkv no longer matches .webm (matroska still covers both).",
+        "targetAbi": "10.11.0.0",
+        "sourceUrl": "https://github.com/mugurc/jellyfin-plugin-pre-transcode/releases/download/v0.10.2.0/pre-transcode-0.10.2.0.zip",
+        "checksum": "f99a3d3c706d3469f85bf672a7a7e154",
+        "timestamp": "2026-10-20T11:07:11Z"
       },
       {
         "version": "0.10.1.0",
