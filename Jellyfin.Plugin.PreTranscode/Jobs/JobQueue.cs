@@ -113,11 +113,7 @@ internal sealed class JobQueue : IJobQueue, IDisposable
     {
         lock (_sync)
         {
-            var duplicate = _jobs.Any(j =>
-                string.Equals(j.SourcePath, job.SourcePath, StringComparison.OrdinalIgnoreCase)
-                && (j.Status == JobStatus.Pending || j.Status == JobStatus.Processing));
-
-            if (duplicate)
+            if (HasActiveJobFor(job.SourcePath, except: null))
             {
                 return false;
             }
@@ -143,9 +139,17 @@ internal sealed class JobQueue : IJobQueue, IDisposable
 
     public void Update(TranscodeJob job)
     {
+        Update(job, static _ => { });
+    }
+
+    public void Update(TranscodeJob job, Action<TranscodeJob> change)
+    {
+        ArgumentNullException.ThrowIfNull(change);
         bool writeThrough;
         lock (_sync)
         {
+            change(job);
+
             var index = _jobs.FindIndex(j => string.Equals(j.Id, job.Id, StringComparison.Ordinal));
             if (index >= 0)
             {
@@ -287,6 +291,15 @@ internal sealed class JobQueue : IJobQueue, IDisposable
                 return false;
             }
 
+            // The same one-active-job-per-source rule Enqueue applies. Without it, requeueing two failed
+            // records of one file left two Pending jobs for it, and a concurrency of 2 encoded them side
+            // by side: "Movie.mkv" and "Movie (1).mkv", or under Replace-in-place two encodes racing to
+            // replace (and delete) the same source.
+            if (HasActiveJobFor(job.SourcePath, except: job))
+            {
+                return false;
+            }
+
             job.Status = JobStatus.Pending;
             job.Progress = 0;
             job.ErrorMessage = string.Empty;
@@ -330,6 +343,15 @@ internal sealed class JobQueue : IJobQueue, IDisposable
         }
 
         Flush();
+    }
+
+    // Requires _sync. True when a job other than `except` is pending or running for this source.
+    private bool HasActiveJobFor(string sourcePath, TranscodeJob? except)
+    {
+        return _jobs.Any(j =>
+            !ReferenceEquals(j, except)
+            && string.Equals(j.SourcePath, sourcePath, StringComparison.OrdinalIgnoreCase)
+            && (j.Status == JobStatus.Pending || j.Status == JobStatus.Processing));
     }
 
     /// <summary>

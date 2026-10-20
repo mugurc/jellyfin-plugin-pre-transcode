@@ -20,6 +20,9 @@ public enum JobStatus
     /// <summary>Cancelled by an admin.</summary>
     Cancelled,
 
-    /// <summary>Skipped because the source already complies with the target profile.</summary>
+    /// <summary>
+    /// Finished without applying an output: the source already complied, its output already existed, the
+    /// transcode was not smaller, or the source changed while it was encoded (the status detail says which).
+    /// </summary>
     Skipped
 }

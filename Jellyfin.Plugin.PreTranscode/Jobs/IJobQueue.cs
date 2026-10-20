@@ -45,6 +45,27 @@ public interface IJobQueue
     void Update(TranscodeJob job);
 
     /// <summary>
+    /// Applies <paramref name="change"/> to a job and persists it as one step, so that no other queue
+    /// operation can observe the job half-changed. A job moving to a final state must go through this:
+    /// trimming the history drops the oldest finished jobs by <see cref="TranscodeJob.FinishedUtc"/>, and
+    /// a job seen with its final status but not yet its finish time sorts as ancient — it was dropped,
+    /// and the update that followed found nothing left to save.
+    /// <para>
+    /// The default applies the change and then calls <see cref="Update(TranscodeJob)"/>, which is all an
+    /// implementation without a lock can offer; it exists so that adding this member did not break other
+    /// implementations of this public interface.
+    /// </para>
+    /// </summary>
+    /// <param name="job">The job to change.</param>
+    /// <param name="change">The change, run under the queue's lock; it must not block.</param>
+    void Update(TranscodeJob job, Action<TranscodeJob> change)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+        change(job);
+        Update(job);
+    }
+
+    /// <summary>
     /// Claims the next pending job (marking it processing), or <c>null</c> if none/paused.
     /// </summary>
     /// <returns>The claimed job, or <c>null</c>.</returns>
@@ -70,10 +91,12 @@ public interface IJobQueue
     int CancelAllPending();
 
     /// <summary>
-    /// Resets a finished job back to pending so it will be retried.
+    /// Resets a finished job back to pending so it will be retried — unless it is still running, or
+    /// another job for the same source is already pending or running (the same one-active-job-per-source
+    /// rule <see cref="Enqueue"/> applies).
     /// </summary>
     /// <param name="id">The job id.</param>
-    /// <returns><c>true</c> if the job existed.</returns>
+    /// <returns><c>true</c> if the job was requeued; <c>false</c> if it does not exist or was refused.</returns>
     bool Requeue(string id);
 
     /// <summary>

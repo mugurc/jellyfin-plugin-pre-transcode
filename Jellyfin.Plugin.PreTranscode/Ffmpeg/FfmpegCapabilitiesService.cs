@@ -106,6 +106,7 @@ internal sealed class FfmpegCapabilitiesService : IFfmpegCapabilitiesService, ID
 
             var info = new EncoderPresetInfo { Encoder = encoder };
             var path = FfmpegPaths.ResolveFfmpeg(_mediaEncoder);
+            var probed = false;
 
             if (!string.IsNullOrEmpty(path))
             {
@@ -117,6 +118,9 @@ internal sealed class FfmpegCapabilitiesService : IFfmpegCapabilitiesService, ID
                         ProbeTimeoutMs,
                         cancellationToken).ConfigureAwait(false);
                     info = FfmpegOutputParser.ParseEncoderPresets(help, encoder);
+
+                    // Any answer at all — "Codec 'x' is not recognized" included — is one ffmpeg gave.
+                    probed = !string.IsNullOrWhiteSpace(help);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -131,7 +135,15 @@ internal sealed class FfmpegCapabilitiesService : IFfmpegCapabilitiesService, ID
                 info.FromFfmpeg = false;
             }
 
-            _presetCache[encoder] = info;
+            // A failed probe is answered but not remembered. Caching it kept the empty pixel-format list
+            // for the life of the process — 10-bit sources encoded at 8 bits until the next restart — after
+            // a single timeout, or after one early probe that looked for "ffmpeg" on PATH before Jellyfin
+            // had set its path and found nothing there.
+            if (probed)
+            {
+                _presetCache[encoder] = info;
+            }
+
             return info;
         }
         finally
