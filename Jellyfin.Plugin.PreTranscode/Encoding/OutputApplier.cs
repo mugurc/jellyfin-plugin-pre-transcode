@@ -77,8 +77,8 @@ internal static class OutputApplier
         // Appending the name as-is wrote an mpegts profile's output as "Recording.mpegts", which Jellyfin
         // does not index, and replace-in-place then deleted the Recording.ts it replaced — the item
         // dropped out of the library. Each name here maps to an extension in Jellyfin's video list ("ogg"
-        // to .ogv, because Jellyfin files .ogg under audio). Anything else keeps its own name, and
-        // Preflight refuses it where the library would not see the result.
+        // to .ogv, which every version indexes as video, while 12 files .ogg under audio). Anything else
+        // keeps its own name, and Preflight refuses it where the library would not see the result.
         return container.ToLowerInvariant() switch
         {
             "" or "mp4" or "psp" => ".mp4",

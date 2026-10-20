@@ -317,7 +317,7 @@ public class OutputApplierTests
     [InlineData(".ogv", true)]
     [InlineData(".nut", false)]
     [InlineData(".ismv", false)]
-    [InlineData(".ogg", false)] // Jellyfin files .ogg under audio
+    [InlineData(".ogg", true)] // 10.11 still lists .ogg as video; 12 files it under audio
     public void IsIndexedAsVideo_FollowsJellyfinsOwnExtensionList(string extension, bool expected)
     {
         Assert.Equal(expected, OutputApplier.IsIndexedAsVideo(extension));
