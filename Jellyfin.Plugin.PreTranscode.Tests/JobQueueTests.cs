@@ -113,6 +113,56 @@ public class JobQueueTests
         Assert.Equal(JobStatus.Pending, q.Get(job.Id)!.Status);
     }
 
+    private static TranscodeJob FinishedJob(string source, JobStatus status)
+    {
+        var job = Job(source);
+        job.Status = status;
+        return job;
+    }
+
+    // Requeueing two failed records of one file used to leave two Pending jobs for it, which a
+    // concurrency of 2 then encoded side by side — "Movie.mkv" and "Movie (1).mkv".
+    [Fact]
+    public void Requeue_SecondRecordOfASourceThatIsAlreadyQueued_IsRefused()
+    {
+        var q = NewQueue();
+        var first = FinishedJob("/media/a.mkv", JobStatus.Failed);
+        var second = FinishedJob("/MEDIA/A.mkv", JobStatus.Failed);
+        q.Enqueue(first);
+        q.Enqueue(second);
+
+        Assert.True(q.Requeue(first.Id));
+        Assert.False(q.Requeue(second.Id));
+
+        Assert.Equal(JobStatus.Failed, q.Get(second.Id)!.Status);
+        Assert.Single(q.GetJobs(), j => j.Status == JobStatus.Pending);
+    }
+
+    [Fact]
+    public void Requeue_WhileAnotherJobForTheSourceIsRunning_IsRefused()
+    {
+        var q = NewQueue();
+        var old = FinishedJob("/media/a.mkv", JobStatus.Completed);
+        q.Enqueue(old);
+        q.Enqueue(Job("/media/a.mkv"));
+        Assert.NotNull(q.ClaimNextPending());
+
+        Assert.False(q.Requeue(old.Id));
+        Assert.Equal(JobStatus.Completed, q.Get(old.Id)!.Status);
+    }
+
+    // The job's own record does not count as "another" active job.
+    [Fact]
+    public void Requeue_APendingJob_IsStillAllowed()
+    {
+        var q = NewQueue();
+        var job = Job("/media/a.mkv");
+        q.Enqueue(job);
+
+        Assert.True(q.Requeue(job.Id));
+        Assert.Equal(JobStatus.Pending, q.Get(job.Id)!.Status);
+    }
+
     // Persistence rewrites the whole file, so a sweep that enqueued 50,000 items used to do that 50,000
     // times over a file growing to ~33 MB — tens of minutes of I/O with the queue lock held. Enqueueing
     // is now coalesced into the periodic flush instead.
