@@ -151,7 +151,9 @@
     (function () {
         var pluginId = '8da245f6-7244-449b-9f32-46043f34b5f0';
 
-        var state = { config: null, caps: null, libraries: [], presetCache: {} };
+        // editingId: the profile whose fields the editor is showing. loaded: whether the last load rendered
+        // completely — saving a half-rendered page would post whatever the blank fields hold.
+        var state = { config: null, caps: null, libraries: [], presetCache: {}, editingId: null, loaded: false };
 
         // ---------- small DOM helpers ----------
         function el(tag, attrs, children) {
@@ -246,6 +248,14 @@
             var id = document.getElementById('ProfileSelector').value;
             return state.config.Profiles.filter(function (p) { return p.Id === id; })[0];
         }
+        // Tracked rather than read from the selector: by the time the selector's change event fires it
+        // already names the profile being switched to, not the one whose edits are on screen.
+        function editingProfile() {
+            return state.config.Profiles.filter(function (p) { return p.Id === state.editingId; })[0];
+        }
+        // The editor is the only copy of unsaved edits, so this runs before anything that rebuilds it or
+        // reads the profiles: switching, adding, deleting, deleting a preset, saving.
+        function commitProfileEditor() { saveProfileEditorInto(editingProfile()); }
 
         function labeledInput(id, label, type, value, desc, attrs) {
             var input = el('input', Object.assign({ id: id, type: type, is: 'emby-input' }, attrs || {}));
@@ -286,10 +296,12 @@
             var host = document.getElementById('ProfileEditor');
             host.innerHTML = '';
             var p = currentProfile();
+            state.editingId = p ? p.Id : null;
             if (!p) { return; }
 
             host.appendChild(labeledInput('pName', 'Profile name', 'text', p.Name,
                 'Just a label for this profile — e.g. "H.264 1080p (phones)".'));
+            document.getElementById('pName').addEventListener('change', function () { p.Name = this.value; refreshProfileChoices(); });
 
             // ---------------- VIDEO ----------------
             host.appendChild(subHeading('Video', 'The target video format. Pick <b>copy</b> to keep the source video untouched (no re-encode).'));
@@ -342,7 +354,7 @@
             var maxWRow = labeledInput('pMaxWidth', 'Max width (px)', 'number', p.MaxWidth, 'e.g. 1920 to cap at 1080p width.', { min: 0 });
             var maxHRow = labeledInput('pMaxHeight', 'Max height (px)', 'number', p.MaxHeight, 'e.g. 1080 to cap at 1080p height.', { min: 0 });
             var rp = labeledSelect('pResolutionPresetId', 'Resolution preset', 'One of the named presets defined further below.');
-            state.config.ResolutionPresets.forEach(function (x) { rp.select.appendChild(opt(x.Id, x.Name + ' (' + x.Width + 'x' + x.Height + ')', p.ResolutionPresetId)); });
+            fillPresetSelect(rp.select, p.ResolutionPresetId);
             host.appendChild(maxWRow); host.appendChild(maxHRow); host.appendChild(rp.wrap);
             function syncRes() {
                 var m = rm.select.value;
@@ -445,12 +457,27 @@
             p.ExtraVideoArgs = val('pExtraVideoArgs'); p.ExtraOutputArgs = val('pExtraOutputArgs');
         }
 
+        // DefaultProfileId is kept in state by its select's change handler, so rebuilding it from state
+        // here keeps the admin's pick (it used to snap back to the loaded value on every add/delete).
         function fillProfileSelectors() {
             var sel = document.getElementById('ProfileSelector');
             var def = document.getElementById('DefaultProfileId');
             var cur = sel.value; sel.innerHTML = ''; def.innerHTML = '';
             state.config.Profiles.forEach(function (p) { sel.appendChild(opt(p.Id, p.Name, cur)); def.appendChild(opt(p.Id, p.Name, state.config.DefaultProfileId)); });
             if (!sel.value && state.config.Profiles[0]) { sel.value = state.config.Profiles[0].Id; }
+        }
+        function fillLibraryProfileSelect(select, selected) {
+            select.innerHTML = '';
+            select.appendChild(opt('', '(use global default)', selected));
+            state.config.Profiles.forEach(function (p) { select.appendChild(opt(p.Id, p.Name, selected)); });
+        }
+        // Everything that lists the profiles by name: the editor's selector, the default and each library
+        // override — rebuilt in place, so a rename (which fires as focus moves on) never destroys the
+        // control being clicked. A library whose profile was just deleted falls to "(use global default)",
+        // which is what its override was cleared to.
+        function refreshProfileChoices() {
+            fillProfileSelectors();
+            Array.prototype.forEach.call(document.querySelectorAll('#Libraries select[id^="libProf_"]'), function (s) { fillLibraryProfileSelect(s, s.value); });
         }
 
         // ---------- resolution presets ----------
@@ -461,10 +488,44 @@
                     inlineInput('rp_name_' + idx, 'Name', 'text', rp.Name, '10em'),
                     inlineInput('rp_w_' + idx, 'Width', 'number', rp.Width, '7em'),
                     inlineInput('rp_h_' + idx, 'Height', 'number', rp.Height, '7em'),
-                    delButton(function () { state.config.ResolutionPresets.splice(idx, 1); renderResPresets(); fillProfileSelectors(); })
+                    delButton(function () { deleteResPreset(idx); })
                 ]);
+                row.addEventListener('change', function () { saveResPresets(); refreshEditorPresets(); });
                 host.appendChild(row);
             });
+        }
+        function deleteResPreset(idx) {
+            // The other rows' edits and the profile editor's live only in the page until taken: without
+            // this the re-render threw them away, and the check below would look at stale profiles.
+            saveResPresets(); commitProfileEditor();
+            var rp = state.config.ResolutionPresets[idx];
+            // A profile left pointing at a deleted preset has no size to fit to, so it silently stopped
+            // downscaling — and the editor then showed (and the next save stored) the first preset instead.
+            var users = state.config.Profiles.filter(function (p) { return p.ResolutionMode === 'UsePreset' && p.ResolutionPresetId === rp.Id; });
+            if (users.length) {
+                Dashboard.alert('"' + rp.Name + '" is the resolution preset of ' + users.map(function (p) { return '"' + p.Name + '"'; }).join(', ')
+                    + ' (resolution policy "Match a preset"). Choose another preset there first, then delete this one.');
+                return;
+            }
+            // Profiles that only remember it from an earlier "Match a preset" choice simply forget it.
+            state.config.Profiles.forEach(function (p) { if (p.ResolutionPresetId === rp.Id) { p.ResolutionPresetId = ''; } });
+            state.config.ResolutionPresets.splice(idx, 1);
+            renderResPresets(); refreshEditorPresets();
+        }
+        function fillPresetSelect(select, selected) {
+            select.innerHTML = '';
+            state.config.ResolutionPresets.forEach(function (x) { select.appendChild(opt(x.Id, x.Name + ' (' + x.Width + 'x' + x.Height + ')', selected)); });
+            // A preset deleted by an older version: keep the reference visible, rather than showing (and
+            // on save storing) whichever preset happens to be first.
+            if (selected && !state.config.ResolutionPresets.some(function (x) { return x.Id === selected; })) {
+                select.appendChild(opt(selected, 'missing preset "' + selected + '" — choose one', selected));
+            }
+        }
+        // The editor's preset list follows adds, deletes and edits below in place, so its other fields
+        // are not re-rendered (and their unsaved edits not lost).
+        function refreshEditorPresets() {
+            var select = document.getElementById('pResolutionPresetId');
+            if (select) { fillPresetSelect(select, select.value); }
         }
         function inlineInput(id, ph, type, value, width) {
             var i = el('input', { id: id, is: 'emby-input', type: type, placeholder: ph, style: 'width:' + (width || '8em') });
@@ -550,8 +611,7 @@
                     body.innerHTML = '';
                     if (!ov) { return; }
                     var prof = labeledSelect('libProf_' + lib.ItemId, 'Profile for this library');
-                    prof.select.appendChild(opt('', '(use global default)', ov.ProfileId));
-                    state.config.Profiles.forEach(function (p) { prof.select.appendChild(opt(p.Id, p.Name, ov.ProfileId)); });
+                    fillLibraryProfileSelect(prof.select, ov.ProfileId);
                     prof.select.addEventListener('change', function () { ov.ProfileId = prof.select.value; });
                     var useGlobal = el('input', { type: 'checkbox', is: 'emby-checkbox' }); if (ov.UseGlobalRules) { useGlobal.checked = true; }
                     var rulesHost = el('div', { id: 'libRules_' + lib.ItemId });
@@ -591,16 +651,25 @@
             fillWindowTimes();
             syncWindow();
         }
+        // The server wraps any minute count into the day the same way (ProcessingWindow.Normalize).
+        function minuteOfDay(m) { return ((m % 1440) + 1440) % 1440; }
+        function timeLabel(m) { var d = minuteOfDay(m); return ('0' + Math.floor(d / 60)).slice(-2) + ':' + ('0' + (d % 60)).slice(-2); }
         function fillWindowTimes() {
-            [['ProcessingWindowStartMinutes', state.config.ProcessingWindowStartMinutes || 0],
-             ['ProcessingWindowStopMinutes', state.config.ProcessingWindowStopMinutes || 0]].forEach(function (pair) {
+            [['ProcessingWindowStartMinutes', parseInt(state.config.ProcessingWindowStartMinutes, 10) || 0],
+             ['ProcessingWindowStopMinutes', parseInt(state.config.ProcessingWindowStopMinutes, 10) || 0]].forEach(function (pair) {
                 var sel = document.getElementById(pair[0]);
-                sel.innerHTML = '';
-                for (var m = 0; m < 1440; m += 30) {
-                    var label = ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + (m % 60)).slice(-2);
-                    sel.appendChild(opt(m, label, pair[1]));
+                var times = [];
+                for (var m = 0; m < 1440; m += 30) { times.push(m); }
+                // The list offers half hours, but the API or a hand-edited file can store any minute. Such a
+                // value gets an entry of its own, in time order: with none, nothing was selected, the
+                // schedule hint threw and took the rest of the page with it, and saving wrote 00:00 over it.
+                if (times.indexOf(pair[1]) < 0) {
+                    times.push(pair[1]);
+                    times.sort(function (a, b) { return minuteOfDay(a) - minuteOfDay(b); });
                 }
-                sel.value = pair[1];
+                sel.innerHTML = '';
+                times.forEach(function (t) { sel.appendChild(opt(t, timeLabel(t), pair[1])); });
+                sel.value = String(pair[1]);
             });
         }
         // The times only mean something when the box is ticked, and an over-midnight window reads as a
@@ -613,10 +682,11 @@
             stop.disabled = !on;
             var hint = document.getElementById('ProcessingWindowHint');
             if (!on) { hint.textContent = 'Transcoding may run at any time of day.'; return; }
-            var a = start.options[start.selectedIndex].text, b = stop.options[stop.selectedIndex].text;
-            hint.textContent = a === b
+            var from = minuteOfDay(parseInt(start.value, 10) || 0), to = minuteOfDay(parseInt(stop.value, 10) || 0);
+            var a = timeLabel(from), b = timeLabel(to);
+            hint.textContent = from === to
                 ? 'Start and stop are the same, so transcoding is allowed all day.'
-                : (parseInt(start.value, 10) > parseInt(stop.value, 10)
+                : (from > to
                     ? 'Transcoding runs ' + a + '–' + b + ', over midnight.'
                     : 'Transcoding runs ' + a + '–' + b + '.');
         }
@@ -660,6 +730,7 @@
         }
 
         function load() {
+            state.loaded = false;
             Dashboard.showLoadingMsg();
             Promise.all([
                 ApiClient.getPluginConfiguration(pluginId),
@@ -672,40 +743,69 @@
                 if (!state.config.GlobalRules) { state.config.GlobalRules = []; }
                 if (!state.config.LibraryOverrides) { state.config.LibraryOverrides = []; }
                 render();
+                state.loaded = true;
                 Dashboard.hideLoadingMsg();
+            }).catch(function () {
+                // A failed request, or a render that threw: either way the spinner must come down, and the
+                // admin must be told the page is not showing their settings.
+                Dashboard.hideLoadingMsg();
+                Dashboard.alert('Could not load the Pre-Transcode settings. Reload the page to try again — saving is disabled until they load.');
             });
         }
 
         function save() {
-            saveGeneral(); saveProfileEditorInto(currentProfile()); saveResPresets();
+            if (!state.loaded) {
+                Dashboard.alert('The settings did not finish loading, so saving now could overwrite them with blank fields. Reload the page first.');
+                return;
+            }
+            saveGeneral(); commitProfileEditor(); saveResPresets();
             Dashboard.showLoadingMsg();
             ApiClient.updatePluginConfiguration(pluginId, state.config).then(function (r) {
                 Dashboard.processPluginConfigurationUpdateResult(r);
+            }, function (e) {
+                // Without this a refused save (the server answers 400 for a value it cannot store) left the
+                // spinner up for ever, with nothing saying the settings had not been saved.
+                Dashboard.hideLoadingMsg();
+                Dashboard.alert('Could not save the settings' + (e && e.status ? ' (HTTP ' + e.status + ')' : '')
+                    + '. Your changes are still on this page; the Jellyfin server log has the reason.');
             });
         }
 
         var page = document.querySelector('#PreTranscodeConfigPage');
         page.addEventListener('pageshow', load);
 
-        page.querySelector('#ProfileSelector').addEventListener('change', function () {
-            // persist edits of the previously-shown profile before switching
-            var sel = document.getElementById('ProfileSelector');
-            var prev = state._editing;
-            if (prev) { var pp = state.config.Profiles.filter(function (x) { return x.Id === prev; })[0]; saveProfileEditorInto(pp); }
-            state._editing = sel.value; renderProfileEditor();
-        });
+        page.querySelector('#ProfileSelector').addEventListener('change', function () { commitProfileEditor(); renderProfileEditor(); });
+        page.querySelector('#DefaultProfileId').addEventListener('change', function () { state.config.DefaultProfileId = this.value; });
         page.querySelector('#btnAddProfile').addEventListener('click', function () {
+            commitProfileEditor();
             var p = { Id: guid(), Name: 'New profile', VideoCodec: 'h264', VideoEncoder: 'libx264', VideoQualityMode: 'Crf', Crf: 21, VideoBitrateKbps: 6000, VideoMaxBitrateKbps: 0, Preset: 'medium', PixelFormatMode: 'Auto', ExtraVideoArgs: '', ResolutionMode: 'Unchanged', MaxWidth: 0, MaxHeight: 0, ResolutionPresetId: '', AudioCodec: 'aac', AudioEncoder: 'aac', AudioBitrateKbps: 256, ChannelPolicy: 'Unchanged', MaxAudioChannels: 2, TonemapHdr: false, TonemapAlgorithm: 'hable', Container: 'mp4', OutputMode: 'SeparateDirectory', OutputDirectory: '', AlternateVersionLabel: 'Pre-Transcode', DiscardOutputIfLarger: false, SkipIfAlreadyCompliant: true, ExtraOutputArgs: '' };
-            state.config.Profiles.push(p); fillProfileSelectors(); document.getElementById('ProfileSelector').value = p.Id; state._editing = p.Id; renderProfileEditor();
+            state.config.Profiles.push(p); refreshProfileChoices(); document.getElementById('ProfileSelector').value = p.Id; renderProfileEditor();
         });
+        function libraryLabel(lo) {
+            var lib = state.libraries.filter(function (l) { return l.ItemId === lo.LibraryId; })[0];
+            return '"' + ((lib && lib.Name) || lo.LibraryName || lo.LibraryId) + '"';
+        }
         page.querySelector('#btnDeleteProfile').addEventListener('click', function () {
             var id = document.getElementById('ProfileSelector').value;
             if (state.config.Profiles.length <= 1) { Dashboard.alert('At least one profile is required.'); return; }
+            commitProfileEditor();
+            var gone = state.config.Profiles.filter(function (p) { return p.Id === id; })[0];
             state.config.Profiles = state.config.Profiles.filter(function (p) { return p.Id !== id; });
-            if (state.config.DefaultProfileId === id) { state.config.DefaultProfileId = state.config.Profiles[0].Id; }
-            state._editing = null; fillProfileSelectors(); renderProfileEditor();
+            var notes = [];
+            if (state.config.DefaultProfileId === id) {
+                state.config.DefaultProfileId = state.config.Profiles[0].Id;
+                notes.push('It was the default profile; the default is now "' + state.config.Profiles[0].Name + '".');
+            }
+            // Repointed here, and said out loud: an override naming a deleted profile used to fall back to
+            // the default without a word, so a library changed profile with nothing on this page showing it.
+            var libs = state.config.LibraryOverrides.filter(function (lo) { return lo.ProfileId === id; });
+            libs.forEach(function (lo) { lo.ProfileId = ''; });
+            if (libs.length) { notes.push((libs.length > 1 ? 'Libraries ' : 'Library ') + libs.map(libraryLabel).join(', ') + ' used it and will use the default profile.'); }
+            refreshProfileChoices(); renderProfileEditor();
+            Dashboard.alert('Deleted profile "' + gone.Name + '". ' + notes.join(' ') + (notes.length ? ' ' : '')
+                + 'Jobs already queued for it will fail ("profile no longer exists") rather than run under a different profile. Nothing changes on the server until you press Save.');
         });
-        page.querySelector('#btnAddResPreset').addEventListener('click', function () { saveResPresets(); state.config.ResolutionPresets.push({ Id: guid(), Name: 'New', Width: 1920, Height: 1080 }); renderResPresets(); });
+        page.querySelector('#btnAddResPreset').addEventListener('click', function () { saveResPresets(); state.config.ResolutionPresets.push({ Id: guid(), Name: 'New', Width: 1920, Height: 1080 }); renderResPresets(); refreshEditorPresets(); });
         page.querySelector('#btnAddRule').addEventListener('click', function () { state.config.GlobalRules.push(newRule()); renderRules('GlobalRules', state.config.GlobalRules); });
         page.querySelector('#btnSweep').addEventListener('click', function () {
             Dashboard.showLoadingMsg();
@@ -722,8 +822,6 @@
         page.querySelector('#ProcessingWindowStartMinutes').addEventListener('change', syncWindow);
         page.querySelector('#ProcessingWindowStopMinutes').addEventListener('change', syncWindow);
         page.querySelector('#PreTranscodeConfigForm').addEventListener('submit', function (e) { e.preventDefault(); save(); return false; });
-
-        page.addEventListener('pageshow', function () { state._editing = null; });
     })();
     </script>
 </div>

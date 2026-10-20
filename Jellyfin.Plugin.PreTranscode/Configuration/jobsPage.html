@@ -308,10 +308,11 @@
             el.style.display = text ? '' : 'none';
         }
 
-        // Every row action: report the failure instead of leaving the row untouched and unexplained.
+        // Every row action: report the failure instead of leaving the row untouched and unexplained. An
+        // alert, not setError: the reload below clears that line on success before it can be read.
         function act(method, path) {
             return api(method, path).then(load, function () {
-                setError('That action failed — the job may already have finished or been removed.');
+                Dashboard.alert('That action failed — the job may already have finished or been removed.');
                 load();
             });
         }
