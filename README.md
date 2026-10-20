@@ -135,15 +135,15 @@ also lets Jellyfin show the plugin's details and offer updates.
 ### Option B — manual
 
 Build (see below) and copy the DLL into a subfolder of your Jellyfin **plugins** directory. Name the
-folder `Pre-Transcode_<version>`, matching the version you built — the examples below use `0.10.1.0`:
+folder `Pre-Transcode_<version>`, matching the version you built — the examples below use `0.10.2.0`:
 
-- **Windows** (native): `C:\ProgramData\Jellyfin\Server\plugins\Pre-Transcode_0.10.1.0\`
-- **linuxserver.io Docker**: `/config/data/plugins/Pre-Transcode_0.10.1.0/` inside the container.
+- **Windows** (native): `C:\ProgramData\Jellyfin\Server\plugins\Pre-Transcode_0.10.2.0\`
+- **linuxserver.io Docker**: `/config/data/plugins/Pre-Transcode_0.10.2.0/` inside the container.
   Path-agnostic install (works under Runtipi etc.):
 
   ```bash
   CID=jellyfin       # your container name (docker ps)
-  VER=0.10.1.0       # the version you built
+  VER=0.10.2.0       # the version you built
   docker exec "$CID" mkdir -p "/config/data/plugins/Pre-Transcode_$VER"
   docker cp Jellyfin.Plugin.PreTranscode.dll "$CID":"/config/data/plugins/Pre-Transcode_$VER/"
   docker restart "$CID"
@@ -241,7 +241,7 @@ Two traps worth knowing about, both of which this log makes visible:
 - **Container and audio conditions ask about the file, not one string.** `Container` is decided by the
   file's extension: `mkv` matches `.mkv`, `mov` matches `.mov`, and `matroska` covers both `.mkv` and
   `.webm`. ffprobe reports one name for several containers (`mov,mp4,m4a,3gp,3g2,mj2` for both `.mov` and
-  `.mp4`, `matroska,webm` for both `.mkv` and `.webm`), so before 0.11.1 `Container Equals mov` matched
+  `.mp4`, `matroska,webm` for both `.mkv` and `.webm`), so before 0.10.2 `Container Equals mov` matched
   every mp4 and `mkv` matched every webm. Other names fall back to what ffprobe reports (`mpegts` still
   finds `.ts`). `AudioCodec` and `AudioChannels` are
   answered over **every** audio track: a positive operator means "some track is like this", a negating
@@ -267,7 +267,7 @@ The plugin DLL is produced at
 To produce an installable, checksummed zip (and the catalog manifest entry), run:
 
 ```powershell
-./build-plugin.ps1 -Version 0.10.1.0
+./build-plugin.ps1 -Version 0.10.2.0
 ```
 
 ## What's next
