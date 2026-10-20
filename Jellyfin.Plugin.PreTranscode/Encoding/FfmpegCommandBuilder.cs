@@ -562,9 +562,11 @@ internal static class FfmpegCommandBuilder
     /// order it requires) are what they encode natively.
     /// </para>
     /// <para>
-    /// Seven channels have no AAC channel configuration at all, so 6.1 still goes out with a PCE; it is
-    /// at least the standard seven-channel layout rather than whatever the source happened to carry.
-    /// Above eight channels neither encoder has a standard layout, so nothing is forced.
+    /// Seven channels have no AAC channel configuration at all, so a 6.1 track (DTS-ES, E-AC-3 6.1) goes
+    /// out with a PCE whatever its layout — measured on 7.1.4: ffprobe reads it back as "unknown" and
+    /// Apple omits the track, the same loss as 5.1(side) had. AAC therefore takes it down to 5.1, which
+    /// every client plays; libopus carries 6.1 natively and keeps it. Above eight channels neither
+    /// encoder has a standard layout, so nothing is forced.
     /// </para>
     /// </remarks>
     /// <param name="encoder">The audio encoder.</param>
@@ -586,7 +588,7 @@ internal static class FfmpegCommandBuilder
             4 => opus ? "quad" : "4.0",
             5 => "5.0",
             6 => "5.1",
-            7 => "6.1",
+            7 => opus ? "6.1" : "5.1",
             8 => "7.1",
             _ => null
         };

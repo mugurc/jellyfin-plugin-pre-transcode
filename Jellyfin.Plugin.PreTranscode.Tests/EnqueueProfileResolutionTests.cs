@@ -115,6 +115,22 @@ public sealed class EnqueueProfileResolutionTests : IDisposable
     }
 
     [Fact]
+    public void RequeueJob_RefusedBecauseTheFileIsAlreadyQueued_IsAConflictNotNotFound()
+    {
+        // Two failed records of one file, as the jobs page lists them, each with its own Requeue button.
+        var first = Created(_controller.EnqueueJob(new EnqueueJobRequest { SourcePath = _source }));
+        first.Status = JobStatus.Failed;
+        _queue.Update(first);
+        var second = Created(_controller.EnqueueJob(new EnqueueJobRequest { SourcePath = _source }));
+        second.Status = JobStatus.Failed;
+        _queue.Update(second);
+
+        Assert.IsType<NoContentResult>(_controller.RequeueJob(first.Id));
+        Assert.IsType<ConflictObjectResult>(_controller.RequeueJob(second.Id));
+        Assert.IsType<NotFoundResult>(_controller.RequeueJob("no-such-job"));
+    }
+
+    [Fact]
     public void WithNoProfileAtAll_NothingCanBeQueued()
     {
         var (_, error) = PreTranscodeController.ResolveProfileId(new PluginConfiguration(), string.Empty);

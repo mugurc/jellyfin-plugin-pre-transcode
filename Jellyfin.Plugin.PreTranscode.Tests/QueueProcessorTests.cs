@@ -311,7 +311,7 @@ public class QueueProcessorTests
         var second = rig.Enqueue(Path.Combine(rig.MediaDir, "Other.mkv"));
         File.WriteAllText(second.SourcePath, "x");
 
-        var log = new ListLogger<QueueProcessor>();
+        var log = new MessageLogger<QueueProcessor>();
         var processor = rig.CreateProcessor(log);
         processor.FfmpegPathTimeout = TimeSpan.FromMilliseconds(300);
         await processor.StartAsync(CancellationToken.None);

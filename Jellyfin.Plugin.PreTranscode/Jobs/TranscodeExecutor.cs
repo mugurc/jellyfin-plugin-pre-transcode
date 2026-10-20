@@ -328,7 +328,7 @@ internal sealed class TranscodeExecutor
                 return;
             }
 
-            var finalPath = OutputApplier.Apply(profile, job.SourcePath, tempFile);
+            var finalPath = OutputApplier.Apply(profile, job.SourcePath, tempFile, _logger);
 
             // The output's extension comes from the profile's container, so replacing Movie.mp4 under an
             // mkv profile writes Movie.mkv and deletes Movie.mp4 — a rename as far as Jellyfin is

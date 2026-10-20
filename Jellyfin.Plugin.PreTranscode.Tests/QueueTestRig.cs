@@ -21,17 +21,6 @@ using Moq;
 namespace Jellyfin.Plugin.PreTranscode.Tests;
 
 /// <summary>
-/// Every queue component reads its settings from the static <see cref="Plugin.Instance"/>, and building a
-/// <see cref="Plugin"/> replaces it. Tests that do so run in this collection, one at a time and after the
-/// parallel ones, so none of them can swap the configuration out from under another.
-/// </summary>
-[CollectionDefinition(Name, DisableParallelization = true)]
-public sealed class PluginInstanceCollection
-{
-    public const string Name = "Plugin.Instance";
-}
-
-/// <summary>
 /// The real <see cref="JobQueue"/>, <see cref="TranscodeExecutor"/> and <see cref="QueueProcessor"/>, wired
 /// together the way the plugin wires them, with seams where a test needs to force an interleaving.
 /// </summary>
@@ -51,7 +40,7 @@ internal sealed class QueueRig : IDisposable
         _paths.SetupGet(p => p.PluginConfigurationsPath).Returns(Path.Combine(Root, "plugin-config"));
 
         Xml.Setup(x => x.DeserializeFromFile(It.IsAny<Type>(), It.IsAny<string>())).Returns(() => new PluginConfiguration());
-        Plugin = new Plugin(_paths.Object, Xml.Object);
+        Plugin = new Plugin(_paths.Object, Xml.Object, NullLogger<Plugin>.Instance);
         Config.Enabled = true;
         Config.MaxConcurrentJobs = 1;
         Config.QueuePaused = false;
@@ -346,7 +335,7 @@ internal sealed class ScriptedProber : IMediaProber
 }
 
 /// <summary>Keeps every formatted log message, so a test can check what was said and how often.</summary>
-internal sealed class ListLogger<T> : Microsoft.Extensions.Logging.ILogger<T>
+internal sealed class MessageLogger<T> : Microsoft.Extensions.Logging.ILogger<T>
 {
     private readonly List<string> _messages = new();
 
