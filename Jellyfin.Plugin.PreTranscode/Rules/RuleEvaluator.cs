@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using Jellyfin.Plugin.PreTranscode.Configuration;
 using Jellyfin.Plugin.PreTranscode.Media;
@@ -13,6 +14,23 @@ namespace Jellyfin.Plugin.PreTranscode.Rules;
 /// </summary>
 internal static class RuleEvaluator
 {
+    // The extensions whose container ffprobe reports under a name it shares with another extension
+    // (.mov/.mp4/.3gp: "mov,mp4,m4a,3gp,3g2,mj2"; .mkv/.webm: "matroska,webm"), with every name a rule
+    // may use for each. Listed only where the format name would otherwise blur two containers together.
+    private static readonly Dictionary<string, string[]> NamesByExtension = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["mp4"] = new[] { "mp4" },
+        ["m4v"] = new[] { "m4v", "mp4" },
+        ["f4v"] = new[] { "f4v", "mp4" },
+        ["mov"] = new[] { "mov", "qt" },
+        ["qt"] = new[] { "qt", "mov" },
+        ["3gp"] = new[] { "3gp" },
+        ["3g2"] = new[] { "3g2" },
+        ["mkv"] = new[] { "mkv", "matroska" },
+        ["mk3d"] = new[] { "mk3d", "mkv", "matroska" },
+        ["webm"] = new[] { "webm", "matroska" }
+    };
+
     public static bool ShouldProcess(IEnumerable<TriggerRule> rules, MediaProbeInfo info)
     {
         foreach (var rule in rules)
@@ -47,7 +65,7 @@ internal static class RuleEvaluator
             case ConditionType.AudioCodec:
                 return AcrossTracks(condition.Operator, AudioCodecs(info), c => EvaluateString(c, condition));
             case ConditionType.Container:
-                return EvaluateContainer(info.Container, condition);
+                return EvaluateContainer(info, condition);
             case ConditionType.VideoHeight:
                 return EvaluateNumber(info.Height, condition);
             case ConditionType.VideoWidth:
@@ -87,7 +105,7 @@ internal static class RuleEvaluator
         {
             ConditionType.VideoCodec => Text(info.VideoCodec),
             ConditionType.AudioCodec => List(AudioCodecs(info).Select(Text)),
-            ConditionType.Container => Text(info.Container),
+            ConditionType.Container => DescribeContainer(info),
             ConditionType.VideoHeight => Number(info.Height),
             ConditionType.VideoWidth => Number(info.Width),
             ConditionType.VideoBitrateKbps => Number(info.VideoBitrateKbps),
@@ -101,9 +119,39 @@ internal static class RuleEvaluator
         };
     }
 
+    /// <summary>
+    /// Whether a condition was left without a value to compare against: blank, or — for In/NotIn — a list
+    /// of nothing but separators (",", " , "), which splits to an empty list. "Not in an empty list" is
+    /// true for every file, so such a condition is unfinished rather than a filter, and never passes.
+    /// </summary>
+    /// <param name="condition">The condition.</param>
+    /// <returns><c>true</c> when there is nothing to compare against.</returns>
+    internal static bool HasNoValue(RuleCondition condition)
+    {
+        return string.IsNullOrWhiteSpace(condition.Value)
+            || (condition.Operator is ComparisonOperator.In or ComparisonOperator.NotIn
+                && SplitList(condition.Value).Length == 0);
+    }
+
     private static string Text(string value)
     {
         return string.IsNullOrEmpty(value) ? "(none)" : value;
+    }
+
+    // The container is decided by the extension whenever the file has one, so that is what the trace
+    // shows, with ffprobe's format name beside it — otherwise "Container Equals webm => FAIL" next to
+    // "actual: matroska,webm" reads like a bug.
+    private static string DescribeContainer(MediaProbeInfo info)
+    {
+        var extension = FileExtension(info);
+        if (extension.Length == 0)
+        {
+            return Text(info.Container);
+        }
+
+        return string.IsNullOrEmpty(info.Container)
+            ? extension + " (file extension)"
+            : extension + " (file extension; ffprobe: " + info.Container + ")";
     }
 
     // Audio conditions are answered over every track, so the log has to show every track too — otherwise
@@ -161,25 +209,30 @@ internal static class RuleEvaluator
     /// for mp4 — while the UI tells the admin to type "mkv". Comparing those two literally meant
     /// "Container Equals mkv" matched no mkv at all, and the negating operators turned that into the
     /// opposite failure: "Container NotEquals mp4" was true for <em>every</em> mp4, so a rule written to
-    /// catch what is not yet mp4 queued the entire library. The compliance checker already knew how to
-    /// compare these; this uses the same rules.
+    /// catch what is not yet mp4 queued the entire library.
+    /// </para>
+    /// <para>
+    /// The format name cannot answer it either, because one demuxer reads several containers: .mov and
+    /// .mp4 both report "mov,mp4,m4a,3gp,3g2,mj2", .mkv and .webm both "matroska,webm". Matching aliases
+    /// against it made "Container Equals mov" — written for iPhone clips — match every .mp4 movie, and
+    /// with a replace-in-place profile re-encode files the admin never targeted. So the file's extension
+    /// decides (see <see cref="ContainerIs"/>), and the format name only when there is no extension.
     /// </para>
     /// </summary>
-    private static bool EvaluateContainer(string sourceContainer, RuleCondition condition)
+    private static bool EvaluateContainer(MediaProbeInfo info, RuleCondition condition)
     {
-        sourceContainer ??= string.Empty;
+        var known = FileExtension(info).Length > 0 || !string.IsNullOrEmpty(info.Container);
 
         // Same two guards as EvaluateString: an unfinished condition is not a filter, and an absent value
         // can only be reasoned about with Exists/NotExists.
-        if (string.IsNullOrWhiteSpace(condition.Value)
+        if (HasNoValue(condition)
             && condition.Operator is ComparisonOperator.Equals or ComparisonOperator.NotEquals
                 or ComparisonOperator.In or ComparisonOperator.NotIn)
         {
             return false;
         }
 
-        if (sourceContainer.Length == 0
-            && condition.Operator is not (ComparisonOperator.Exists or ComparisonOperator.NotExists))
+        if (!known && condition.Operator is not (ComparisonOperator.Exists or ComparisonOperator.NotExists))
         {
             return false;
         }
@@ -187,20 +240,63 @@ internal static class RuleEvaluator
         switch (condition.Operator)
         {
             case ComparisonOperator.Equals:
-                return ProfileComplianceChecker.ContainerIs(sourceContainer, condition.Value);
+                return ContainerIs(info, condition.Value);
             case ComparisonOperator.NotEquals:
-                return !ProfileComplianceChecker.ContainerIs(sourceContainer, condition.Value);
+                return !ContainerIs(info, condition.Value);
             case ComparisonOperator.In:
-                return SplitList(condition.Value).Any(v => ProfileComplianceChecker.ContainerIs(sourceContainer, v));
+                return SplitList(condition.Value).Any(v => ContainerIs(info, v));
             case ComparisonOperator.NotIn:
-                return !SplitList(condition.Value).Any(v => ProfileComplianceChecker.ContainerIs(sourceContainer, v));
+                return !SplitList(condition.Value).Any(v => ContainerIs(info, v));
             case ComparisonOperator.Exists:
-                return sourceContainer.Length > 0;
+                return known;
             case ComparisonOperator.NotExists:
-                return sourceContainer.Length == 0;
+                return !known;
             default:
                 return false;
         }
+    }
+
+    /// <summary>
+    /// Whether the file's container is the one a condition names.
+    /// <para>
+    /// For the two families ffprobe cannot tell apart, the extension alone answers, from
+    /// <see cref="NamesByExtension"/>: a .mov is "mov" (or "qt") and never "mp4", a .webm is "webm" and
+    /// never "mkv". The family name a rule may already use ("matroska", ffprobe's own word) still covers
+    /// every Matroska file, and "mp4" still covers .m4v. Any other extension matches its own name, and
+    /// otherwise ffprobe's format name as before — which is how "mpegts" still finds a .ts or .m2ts and
+    /// "avi" an .avi. A format name copied verbatim from the explain log ("matroska,webm") means what it
+    /// literally says.
+    /// </para>
+    /// </summary>
+    /// <param name="info">The probed media facts.</param>
+    /// <param name="name">The container name the condition names.</param>
+    /// <returns><c>true</c> when the file is in that container.</returns>
+    internal static bool ContainerIs(MediaProbeInfo info, string name)
+    {
+        name = (name ?? string.Empty).Trim().TrimStart('.');
+        if (name.Length == 0)
+        {
+            return false;
+        }
+
+        if (string.Equals(info.Container, name, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var extension = FileExtension(info);
+        if (NamesByExtension.TryGetValue(extension, out var names))
+        {
+            return names.Contains(name, StringComparer.OrdinalIgnoreCase);
+        }
+
+        return (extension.Length > 0 && string.Equals(extension, name, StringComparison.OrdinalIgnoreCase))
+            || ProfileComplianceChecker.ContainerIs(info.Container ?? string.Empty, name);
+    }
+
+    private static string FileExtension(MediaProbeInfo info)
+    {
+        return Path.GetExtension(info.Path ?? string.Empty).TrimStart('.').ToLowerInvariant();
     }
 
     private static string Number(double value)
@@ -217,7 +313,7 @@ internal static class RuleEvaluator
         // A value-comparison operator with no configured value is an unfinished condition, not a filter.
         // Without this guard NotEquals/NotIn against an empty value match every file (e.g. a rule the
         // admin added but has not yet typed a codec into would queue the entire library).
-        if (string.IsNullOrWhiteSpace(condition.Value)
+        if (HasNoValue(condition)
             && condition.Operator is ComparisonOperator.Equals or ComparisonOperator.NotEquals
                 or ComparisonOperator.In or ComparisonOperator.NotIn)
         {

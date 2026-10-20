@@ -111,7 +111,7 @@ internal static class RuleTrace
         if (condition.Operator is not (ComparisonOperator.Exists or ComparisonOperator.NotExists))
         {
             sb.Append(" '").Append(condition.Value ?? string.Empty).Append('\'');
-            if (string.IsNullOrWhiteSpace(condition.Value))
+            if (RuleEvaluator.HasNoValue(condition))
             {
                 sb.Append(" [no value set — this condition never passes]");
             }

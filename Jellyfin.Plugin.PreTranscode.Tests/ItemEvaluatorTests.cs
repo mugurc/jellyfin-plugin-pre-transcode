@@ -174,4 +174,112 @@ public class ItemEvaluatorTests
 
         Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/Movie.mkv", "p1", _ => 123, 3));
     }
+
+    // Same-container replace-in-place records OutputPath == SourcePath, and so does a "kept original"
+    // (DiscardOutputIfLarger) skip. The source-path branch accepted any file at that path, so an upgrade
+    // or re-rip landing under the same name was skipped for ever as "already transcoded".
+    [Theory]
+    [InlineData(JobStatus.Completed)] // same-container replace in place
+    [InlineData(JobStatus.Skipped)] // kept the original because the transcode was not smaller
+    public void AlreadyHandled_FalseWhenANewFileArrivedAtAPathWhoseOutputWasItself(JobStatus status)
+    {
+        var jobs = new[] { Job("/m/Movie.mkv", "p1", status, "/m/Movie.mkv", outputSize: 4_000_000_000) };
+
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/m/Movie.mkv", "p1", _ => 4_000_000_000, 3));
+        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/m/Movie.mkv", "p1", _ => 60_000_000_000, 3));
+    }
+
+    [Fact]
+    public void AlreadyHandled_SamePathRecordWithoutASize_IsStillTrusted()
+    {
+        var jobs = new[] { Job("/m/Movie.mkv", "p1", JobStatus.Completed, "/m/Movie.mkv") };
+
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/m/Movie.mkv", "p1", _ => 60_000_000_000, 3));
+    }
+
+    // Replace-in-place could not delete the original (a player had it open on Windows), but the new file
+    // is in place and the job completed. The leftover original must count as handled, or the next sweep
+    // re-encodes it into "Movie (1).mp4".
+    [Fact]
+    public void AlreadyHandled_TrueForAnOriginalLeftBehindByACompletedReplace()
+    {
+        var jobs = new[] { Job("/m/Movie.mkv", "p1", JobStatus.Completed, "/m/Movie.mp4", outputSize: 4_000_000_000) };
+
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/m/Movie.mkv", "p1", path => path == "/m/Movie.mp4" ? 4_000_000_000 : 9_000_000_000, 3));
+    }
+
+    // The leftover is handled, but the admin still has to delete it — and Jellyfin indexes it as a second
+    // item meanwhile — so each sweep names it and the file that replaced it.
+    [Fact]
+    public void OriginalLeftBehind_NamesTheReplacementOfAnUndeletedOriginal()
+    {
+        var jobs = new[]
+        {
+            Job("/m/Movie.mkv", "p1", JobStatus.Completed, "/m/Movie.mp4", outputSize: 4_000_000_000),
+            Job("/m/Same.mkv", "p1", JobStatus.Completed, "/m/Same.mkv", outputSize: 4_000_000_000),
+            Job("/m/Kept.mkv", "p1", JobStatus.Skipped, "/m/Kept.mkv", outputSize: 4_000_000_000),
+        };
+
+        Assert.Equal("/m/Movie.mp4", ItemEvaluator.OriginalLeftBehind(jobs, "/m/Movie.mkv", "p1", _ => 4_000_000_000));
+        Assert.Null(ItemEvaluator.OriginalLeftBehind(jobs, "/m/Movie.mkv", "p2", _ => 4_000_000_000));
+        Assert.Null(ItemEvaluator.OriginalLeftBehind(jobs, "/m/Movie.mkv", "p1", _ => 0)); // the replacement is gone too
+
+        // Replaced under its own name, or kept as the better file: nothing was left behind.
+        Assert.Null(ItemEvaluator.OriginalLeftBehind(jobs, "/m/Same.mkv", "p1", _ => 4_000_000_000));
+        Assert.Null(ItemEvaluator.OriginalLeftBehind(jobs, "/m/Kept.mkv", "p1", _ => 4_000_000_000));
+    }
+
+    // A file written after the replacement finished is not the undeleted original but something new that
+    // arrived under the old name (an upgrade), and telling the admin to delete it would be wrong.
+    [Fact]
+    public void OriginalLeftBehind_IgnoresAFileWrittenAfterTheReplacement()
+    {
+        var finished = new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc);
+        var job = Job("/m/Movie.mkv", "p1", JobStatus.Completed, "/m/Movie.mp4", outputSize: 4_000_000_000);
+        job.FinishedUtc = finished;
+        var jobs = new[] { job };
+
+        Assert.Equal("/m/Movie.mp4", ItemEvaluator.OriginalLeftBehind(jobs, "/m/Movie.mkv", "p1", _ => 1, finished.AddDays(-30)));
+        Assert.Null(ItemEvaluator.OriginalLeftBehind(jobs, "/m/Movie.mkv", "p1", _ => 1, finished.AddDays(1)));
+    }
+
+    // Failures are counted per path, so three failures on a broken download used to lock out the fixed
+    // file that later replaced it under the same name. Failures recorded before the current file was
+    // written were about some other file.
+    [Fact]
+    public void AlreadyHandled_FailuresBeforeTheFileWasLastWritten_DoNotCount()
+    {
+        var failedAt = new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc);
+        var jobs = new[]
+        {
+            FailedAt("/a.mkv", failedAt),
+            FailedAt("/a.mkv", failedAt.AddHours(1)),
+            FailedAt("/a.mkv", failedAt.AddHours(2)),
+        };
+
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => 0, 3, sourceWrittenUtc: failedAt.AddMinutes(-5)));
+        Assert.False(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => 0, 3, sourceWrittenUtc: failedAt.AddDays(1)));
+
+        // Unknown write time, or a record with no finish time: counted, exactly as before.
+        Assert.True(ItemEvaluator.AlreadyHandled(jobs, "/a.mkv", "p1", _ => 0, 3, sourceWrittenUtc: null));
+        var undated = new[] { Job("/a.mkv", "p1", JobStatus.Failed), Job("/a.mkv", "p1", JobStatus.Failed), Job("/a.mkv", "p1", JobStatus.Failed) };
+        Assert.True(ItemEvaluator.AlreadyHandled(undated, "/a.mkv", "p1", _ => 0, 3, sourceWrittenUtc: failedAt));
+    }
+
+    // A timestamp in the future (a NAS whose clock runs ahead, a camera with a dead clock battery) would
+    // make every failure look older than the file and retry a broken encode on every sweep for ever.
+    [Fact]
+    public void WrittenUtcOrNull_DistrustsATimestampInTheFuture()
+    {
+        WithTempFile(DateTime.UtcNow.AddMinutes(-5), path => Assert.NotNull(ItemEvaluator.WrittenUtcOrNull(path)));
+        WithTempFile(DateTime.UtcNow.AddDays(30), path => Assert.Null(ItemEvaluator.WrittenUtcOrNull(path)));
+        Assert.Null(ItemEvaluator.WrittenUtcOrNull(Path.Combine(Path.GetTempPath(), "does-not-exist-" + Path.GetRandomFileName())));
+    }
+
+    private static TranscodeJob FailedAt(string src, DateTime finishedUtc)
+    {
+        var job = Job(src, "p1", JobStatus.Failed);
+        job.FinishedUtc = finishedUtc;
+        return job;
+    }
 }

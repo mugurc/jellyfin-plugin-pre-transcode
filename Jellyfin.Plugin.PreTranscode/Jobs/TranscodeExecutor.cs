@@ -165,6 +165,16 @@ internal sealed class TranscodeExecutor
                 return;
             }
 
+            // A destination the apply step cannot write (read-only mount, missing permission, a name over
+            // the filesystem's limit, an extension Jellyfin would not index) used to be discovered only
+            // after the whole encode, and then again on each retry. Checked here, before ffmpeg starts.
+            var destinationProblem = OutputApplier.Preflight(profile, job.SourcePath, _logger);
+            if (destinationProblem is not null)
+            {
+                Fail(job, destinationProblem);
+                return;
+            }
+
             SetDetail(job, "probing");
             var probe = await _prober.ProbeAsync(job.SourcePath, cancellationToken).ConfigureAwait(false);
             if (probe is null)
