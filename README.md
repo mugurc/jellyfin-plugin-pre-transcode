@@ -237,12 +237,15 @@ Two traps worth knowing about, both of which this log makes visible:
 
 - **A matched rule can still be vetoed.** If the log says *"a rule matched, but the file is already
   compliant"*, the target profile would change nothing it compares — codec, container, resolution,
-  audio, HDR. **File size and bitrate are not compared.** A profile that exists to shrink material
-  already in the target codec must therefore switch off **"Skip files already matching this profile"**.
-- **Container and audio conditions ask about the file, not one string.** `Container` is matched against
-  what ffprobe actually reports (`matroska,webm` for mkv, `mov,mp4,m4a,3gp,3g2,mj2` for mp4), so typing
-  `mkv` or `mp4` works — before 0.7.1 the comparison was literal, so `Container Equals mkv` matched
-  nothing and `Container NotEquals mp4` matched *every* mp4. `AudioCodec` and `AudioChannels` are
+  bit depth and chroma, audio, HDR. **File size and bitrate are not compared.** A profile that exists to
+  shrink material already in the target codec must therefore switch off **"Skip files already matching
+  this profile"**.
+- **Container and audio conditions ask about the file, not one string.** `Container` is decided by the
+  file's extension: `mkv` matches `.mkv`, `mov` matches `.mov`, and `matroska` covers both `.mkv` and
+  `.webm`. ffprobe reports one name for several containers (`mov,mp4,m4a,3gp,3g2,mj2` for both `.mov` and
+  `.mp4`, `matroska,webm` for both `.mkv` and `.webm`), so before 0.11.1 `Container Equals mov` matched
+  every mp4 and `mkv` matched every webm. Other names fall back to what ffprobe reports (`mpegts` still
+  finds `.ts`). `AudioCodec` and `AudioChannels` are
   answered over **every** audio track: a positive operator means "some track is like this", a negating
   one means "no track is". They used to see only the first track, so a remux whose commentary is muxed
   ahead of the main audio was never queued.
