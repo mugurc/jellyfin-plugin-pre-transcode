@@ -36,46 +36,67 @@ public class MediaProbeInfo
 
     /// <summary>
     /// Gets or sets the video width in pixels as it is <b>displayed</b> — the coded width less any
-    /// container crop. Equal to <see cref="CodedWidth"/> for the overwhelming majority of files.
+    /// container crop, turned by any display rotation. Equal to <see cref="CodedWidth"/> for the
+    /// overwhelming majority of files.
     /// </summary>
     /// <remarks>
     /// This is deliberately the displayed size rather than the coded one, because every consumer here
     /// (rule conditions, the compliance check, the scale filter) is reasoning about the picture a viewer
-    /// ends up with, and ffmpeg applies container cropping by itself from 7.1 onwards. A Matroska file
-    /// carrying <c>PixelCrop*</c> elements reports the uncropped size in ffprobe's <c>width</c>/
-    /// <c>height</c> and the crop separately as side data, so taking those fields at face value describes
-    /// a frame that will not exist in the output. See <see cref="CodedWidth"/> for the raw figure.
+    /// ends up with — which is also the picture a re-encode produces. ffmpeg applies container cropping
+    /// by itself from 7.1 onwards, and has rotated by the display matrix while decoding for far longer. A
+    /// Matroska file carrying <c>PixelCrop*</c> elements reports the uncropped size in ffprobe's
+    /// <c>width</c>/<c>height</c> and the crop separately as side data, and a portrait phone clip reports
+    /// its landscape coded frame with the turn as a display matrix, so taking those fields at face value
+    /// describes a frame that will not exist in the output. See <see cref="CodedWidth"/> for the raw figure.
     /// </remarks>
     public int Width { get; set; }
 
     /// <summary>
     /// Gets or sets the video height in pixels as it is <b>displayed</b> — the coded height less any
-    /// container crop. Equal to <see cref="CodedHeight"/> for the overwhelming majority of files.
+    /// container crop, turned by any display rotation. Equal to <see cref="CodedHeight"/> for the
+    /// overwhelming majority of files.
     /// </summary>
     public int Height { get; set; }
 
     /// <summary>
     /// Gets or sets the coded video width in pixels, exactly as ffprobe reported it, before any
-    /// container crop is applied. Equal to <see cref="Width"/> unless the container carries a crop.
+    /// container crop or display rotation is applied. Equal to <see cref="Width"/> unless the container
+    /// carries a crop or a quarter-turn.
     /// </summary>
     public int CodedWidth { get; set; }
 
     /// <summary>
     /// Gets or sets the coded video height in pixels, exactly as ffprobe reported it, before any
-    /// container crop is applied. Equal to <see cref="Height"/> unless the container carries a crop.
+    /// container crop or display rotation is applied. Equal to <see cref="Height"/> unless the container
+    /// carries a crop or a quarter-turn.
     /// </summary>
     /// <remarks>
-    /// Kept because an ffmpeg older than 7.1 does <b>not</b> apply container cropping, so an output
-    /// verified against the displayed size alone would be rejected on those servers. The verifier
-    /// accepts either shape for that reason.
+    /// Kept because an ffmpeg older than 7.1 does <b>not</b> apply container cropping, and a stream copy
+    /// into a container that cannot hold a display matrix loses the turn, so an output verified against
+    /// the displayed size alone would be rejected in those cases. The verifier accepts the coded shape
+    /// as well for that reason.
     /// </remarks>
     public int CodedHeight { get; set; }
 
     /// <summary>
-    /// Gets a value indicating whether the container carries a crop, i.e. the displayed size differs
-    /// from the coded size.
+    /// Gets or sets the display rotation in degrees, normalised to 0, 90, 180 or 270 (0 when the source
+    /// carries none). A quarter-turn is already reflected in <see cref="Width"/>/<see cref="Height"/>.
     /// </summary>
-    public bool HasContainerCrop => CodedWidth != Width || CodedHeight != Height;
+    public int Rotation { get; set; }
+
+    /// <summary>
+    /// Gets a value indicating whether the display rotation is a quarter-turn, i.e. the picture is shown
+    /// with its coded width and height swapped.
+    /// </summary>
+    public bool IsQuarterTurn => Rotation is 90 or 270;
+
+    /// <summary>
+    /// Gets a value indicating whether the container carries a crop, i.e. the displayed size differs
+    /// from the coded size by more than the rotation explains.
+    /// </summary>
+    public bool HasContainerCrop => IsQuarterTurn
+        ? CodedWidth != Height || CodedHeight != Width
+        : CodedWidth != Width || CodedHeight != Height;
 
     /// <summary>
     /// Gets or sets the video bitrate in kbps (0 when unknown — e.g. Matroska stores no per-stream

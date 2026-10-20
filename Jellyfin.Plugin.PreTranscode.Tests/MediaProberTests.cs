@@ -246,4 +246,91 @@ public class MediaProberTests
         Assert.False(info.HasContainerCrop);
     }
 
+    // A portrait phone clip, exactly as jellyfin-ffprobe 7.1.4 reports it: the coded frame is landscape
+    // and the display matrix turns it. ffmpeg rotates while decoding, so the encode produces 1080x1920 —
+    // and a probe that read 1920x1080 made the verifier reject every such encode, and made a
+    // "scale=1280:-2" longest-edge cap enlarge the 1080-wide picture to 1280x2276.
+    private static string RotatedJson(string rotationEntry) => @"{
+        ""format"": { ""format_name"": ""mov,mp4,m4a,3gp,3g2,mj2"", ""duration"": ""3.0"" },
+        ""streams"": [
+            { ""codec_type"": ""video"", ""codec_name"": ""hevc"", ""width"": 1920, ""height"": 1080,
+              ""coded_width"": 1920, ""coded_height"": 1088, ""pix_fmt"": ""yuv420p"", ""r_frame_rate"": ""30/1"",
+              " + rotationEntry + @" },
+            { ""codec_type"": ""audio"", ""codec_name"": ""aac"", ""channels"": 1 }
+        ]
+    }";
+
+    [Theory]
+    [InlineData(90, 90)]
+    [InlineData(-90, 270)]
+    [InlineData(270, 270)]
+    public void DisplayMatrixQuarterTurn_SwapsTheDisplayedSize(int rotation, int normalized)
+    {
+        var json = RotatedJson(@"""side_data_list"": [ { ""side_data_type"": ""Display Matrix"", ""displaymatrix"": ""..."", ""rotation"": "
+            + rotation.ToString(System.Globalization.CultureInfo.InvariantCulture) + " } ]");
+        var info = MediaProber.Parse(json, "/media/portrait.mp4");
+
+        Assert.Equal(1080, info.Width);
+        Assert.Equal(1920, info.Height);
+        Assert.Equal(normalized, info.Rotation);
+
+        // The coded figures stay as ffprobe reported them, and turning a frame is not cropping it.
+        Assert.Equal(1920, info.CodedWidth);
+        Assert.Equal(1080, info.CodedHeight);
+        Assert.False(info.HasContainerCrop);
+    }
+
+    [Fact]
+    public void HalfTurn_KeepsTheShape()
+    {
+        var info = MediaProber.Parse(
+            RotatedJson(@"""side_data_list"": [ { ""side_data_type"": ""Display Matrix"", ""rotation"": -180 } ]"),
+            "/media/upside-down.mp4");
+
+        Assert.Equal(1920, info.Width);
+        Assert.Equal(1080, info.Height);
+        Assert.Equal(180, info.Rotation);
+    }
+
+    // Older ffprobe builds report the turn as a "rotate" tag rather than side data.
+    [Fact]
+    public void LegacyRotateTag_IsHonoured()
+    {
+        var info = MediaProber.Parse(RotatedJson(@"""tags"": { ""rotate"": ""90"" }"), "/media/portrait.mp4");
+
+        Assert.Equal(1080, info.Width);
+        Assert.Equal(1920, info.Height);
+        Assert.False(info.HasContainerCrop);
+    }
+
+    // Matroska can carry both. The crop is in coded pixels and ffmpeg applies it before it rotates, so
+    // 640x360 less 40 top and bottom is 640x280, displayed as 280x640 — measured on 7.1.4 and 9.0.2.
+    [Fact]
+    public void ContainerCropAndRotation_CropFirstThenTurn()
+    {
+        const string Json = @"{
+            ""format"": { ""format_name"": ""matroska,webm"", ""duration"": ""1.0"" },
+            ""streams"": [
+                { ""codec_type"": ""video"", ""codec_name"": ""h264"", ""width"": 640, ""height"": 360,
+                  ""side_data_list"": [
+                    { ""side_data_type"": ""Frame Cropping"", ""crop_top"": 40, ""crop_bottom"": 40, ""crop_left"": 0, ""crop_right"": 0 },
+                    { ""side_data_type"": ""Display Matrix"", ""rotation"": 90 } ] }
+            ]
+        }";
+        var info = MediaProber.Parse(Json, "/media/a.mkv");
+
+        Assert.Equal(280, info.Width);
+        Assert.Equal(640, info.Height);
+        Assert.Equal(640, info.CodedWidth);
+        Assert.Equal(360, info.CodedHeight);
+        Assert.True(info.HasContainerCrop);
+    }
+
+    [Fact]
+    public void NoRotation_ReadsAsZero()
+    {
+        var info = MediaProber.Parse(MkvJson, "/media/a.mkv");
+        Assert.Equal(0, info.Rotation);
+    }
+
 }

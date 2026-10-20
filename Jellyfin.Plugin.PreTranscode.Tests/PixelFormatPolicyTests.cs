@@ -170,6 +170,40 @@ public class PixelFormatPolicyTests
         Assert.Equal(expected, MediaProber.BitDepthFromPixelFormat(pixelFormat));
     }
 
+    [Theory]
+    [InlineData("yuv420p", "420")]
+    [InlineData("yuvj420p", "420")]
+    [InlineData("yuv420p10le", "420")]
+    [InlineData("yuva420p", "420")]
+    [InlineData("nv12", "420")]
+    [InlineData("nv21", "420")]
+    [InlineData("p010le", "420")]
+    [InlineData("p016le", "420")]
+    [InlineData("yuv422p", "422")]
+    [InlineData("yuvj422p", "422")]
+    [InlineData("yuv422p10le", "422")]
+    [InlineData("nv16", "422")]
+    [InlineData("p210le", "422")]
+    [InlineData("yuyv422", "422")]
+    [InlineData("uyvy422", "422")]
+    [InlineData("yuv444p", "444")]
+    [InlineData("yuv444p12le", "444")]
+    [InlineData("nv24", "444")]
+    [InlineData("gbrp", "444")]
+    [InlineData("gbrp10le", "444")]
+    [InlineData("rgb24", "444")]
+    [InlineData("yuv411p", "411")]
+    [InlineData("yuv410p", "410")]
+    [InlineData("yuv440p", "440")]
+    [InlineData("gray", "400")]
+    [InlineData("gray10le", "400")]
+    [InlineData("", null)]
+    [InlineData("vaapi", null)]
+    public void ChromaSubsampling_ReadsTheFormatName(string pixelFormat, string? expected)
+    {
+        Assert.Equal(expected, MediaProber.ChromaSubsampling(pixelFormat));
+    }
+
     [Fact]
     public void Probe_PrefersBitsPerRawSample()
     {

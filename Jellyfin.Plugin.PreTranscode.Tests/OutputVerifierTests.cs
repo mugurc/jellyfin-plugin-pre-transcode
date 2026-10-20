@@ -321,4 +321,94 @@ public class OutputVerifierTests
         }
     }
 
+    // A portrait phone clip: coded landscape, turned by its display matrix. MediaProber describes it as
+    // displayed (1080x1920).
+    private static MediaProbeInfo RotatedSource()
+    {
+        var source = Video(1080, 1920, duration: 3);
+        source.CodedWidth = 1920;
+        source.CodedHeight = 1080;
+        source.Rotation = 90;
+        return source;
+    }
+
+    [Theory]
+    // A re-encode: ffmpeg rotates while decoding, so the picture comes out upright.
+    [InlineData(1080, 1920)]
+    [InlineData(720, 1280)]
+    // A copy into a container that kept the display matrix is probed as displayed too; one that dropped
+    // it (or an ffmpeg that does not read it from this container) leaves the coded landscape frame.
+    [InlineData(1920, 1080)]
+    public async Task RotatedSource_EitherOrientation_IsAccepted(int width, int height)
+    {
+        var output = NewOutputFile();
+        try
+        {
+            var (ok, reason) = await OutputVerifier.VerifyAsync(
+                new FakeProber(Video(width, height, duration: 3)), output, RotatedSource(), CancellationToken.None);
+            Assert.True(ok, reason);
+        }
+        finally
+        {
+            File.Delete(output);
+        }
+    }
+
+    // A rotated and container-cropped Matroska source on an ffmpeg that rotates but does not crop (or a
+    // copy that keeps the turn and loses the crop) produces the turned CODED frame.
+    [Fact]
+    public async Task RotatedCroppedSource_TurnedButUncroppedOutput_IsAccepted()
+    {
+        var source = Video(280, 640, duration: 3);
+        source.CodedWidth = 640;
+        source.CodedHeight = 360;
+        source.Rotation = 90;
+
+        var output = NewOutputFile();
+        try
+        {
+            var (ok, reason) = await OutputVerifier.VerifyAsync(
+                new FakeProber(Video(360, 640, duration: 3)), output, source, CancellationToken.None);
+            Assert.True(ok, reason);
+        }
+        finally
+        {
+            File.Delete(output);
+        }
+    }
+
+    [Fact]
+    public async Task RotatedSource_SquareCoverArt_IsStillRejected()
+    {
+        var output = NewOutputFile();
+        try
+        {
+            var (ok, reason) = await OutputVerifier.VerifyAsync(
+                new FakeProber(Video(600, 600, duration: 3)), output, RotatedSource(), CancellationToken.None);
+            Assert.False(ok);
+            Assert.Contains("shape", reason, System.StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(output);
+        }
+    }
+
+    // An odd source is cropped by one row to reach the encoder at all; that is the same picture.
+    [Fact]
+    public async Task OneRowEvenCrop_IsAccepted()
+    {
+        var output = NewOutputFile();
+        try
+        {
+            var (ok, reason) = await OutputVerifier.VerifyAsync(
+                new FakeProber(Video(720, 302)), output, Video(720, 303), CancellationToken.None);
+            Assert.True(ok, reason);
+        }
+        finally
+        {
+            File.Delete(output);
+        }
+    }
+
 }
